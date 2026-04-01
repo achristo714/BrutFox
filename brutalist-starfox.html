@@ -158,8 +158,8 @@ const FLIGHT = {
 };
 
 const CONTROLS = {
-    LERP_FACTOR: 0.18,
-    BANK_ANGLE: Math.PI / 12,
+    LERP_FACTOR: 0.35,
+    BANK_ANGLE: Math.PI / 10,
     ROLL_DURATION: 0.4,
     ROLL_COOLDOWN: 1.5,
     DOUBLE_TAP_WINDOW: 0.3,
@@ -173,8 +173,8 @@ const CAM = {
 };
 
 const BOUNDS = {
-    MOVE_X: 18,
-    MOVE_Y: 12
+    MOVE_X: 22,
+    MOVE_Y: 14
 };
 
 // ============================================================
@@ -920,8 +920,11 @@ function updateShip(dt) {
 
     // Smooth banking - lerp toward target bank angle
     const lateralDelta = targetOffset.x - shipOffset.x;
-    const targetBankAngle = THREE.MathUtils.clamp(lateralDelta * 0.3, -CONTROLS.BANK_ANGLE, CONTROLS.BANK_ANGLE);
-    smoothBankAngle += (targetBankAngle - smoothBankAngle) * 0.06;
+    let targetBankAngle = THREE.MathUtils.clamp(lateralDelta * 0.3, -CONTROLS.BANK_ANGLE, CONTROLS.BANK_ANGLE);
+    // Hold Q/E to tilt vertically for tight squeezes
+    if (input.keys['KeyQ']) targetBankAngle = -Math.PI / 4;
+    if (input.keys['KeyE']) targetBankAngle = Math.PI / 4;
+    smoothBankAngle += (targetBankAngle - smoothBankAngle) * 0.1;
 
     // Smooth boost pitch
     const targetBoostPitch = (isBoosting && boostMeter > 0) ? 0.08 : 0;
@@ -996,15 +999,14 @@ function updateCamera(dt) {
     const camRight = _tempVec.crossVectors(camTangent, _worldUp).normalize();
     const camUp = _tempVec2.crossVectors(camRight, camTangent).normalize();
 
-    // Ideal camera position
+    // Ideal camera position - follows ship offset closely
     const idealPos = _tempVec3.copy(camSplinePoint);
     idealPos.addScaledVector(camUp, CAM.ABOVE);
-    // Offset camera slightly with ship offset (dampened)
-    idealPos.addScaledVector(camRight, shipOffset.x * 0.3);
-    idealPos.addScaledVector(camUp, shipOffset.y * 0.2);
+    idealPos.addScaledVector(camRight, shipOffset.x * 0.7);
+    idealPos.addScaledVector(camUp, shipOffset.y * 0.5);
 
     // Lerp camera toward ideal
-    camera.position.lerp(idealPos, CAM.LERP);
+    camera.position.lerp(idealPos, 0.08);
 
     // Look at ship (or slightly ahead of it)
     const lookAt = shipGroup.position.clone().addScaledVector(camTangent, 5);
@@ -1653,7 +1655,7 @@ function createTurretPool() {
     for (let i = 0; i < 10; i++) {
         const group = new THREE.Group();
         const bodyGeo = new THREE.IcosahedronGeometry(1.5, 0);
-        const bodyMat = new THREE.MeshPhongMaterial({ color: COLORS.DUSTY_BLUE, flatShading: true });
+        const bodyMat = new THREE.MeshPhongMaterial({ color: 0xCC3366, flatShading: true });
         const body = new THREE.Mesh(bodyGeo, bodyMat);
         group.add(body);
         const eyeGeo = new THREE.SphereGeometry(0.35, 6, 4);
@@ -1697,7 +1699,7 @@ function createFragmentPool() {
 
 function createFlyerPool() {
     const geo = new THREE.TetrahedronGeometry(0.7, 0);
-    const mat = new THREE.MeshPhongMaterial({ color: 0x00F0FF, emissive: 0x00F0FF, emissiveIntensity: 0.4, flatShading: true });
+    const mat = new THREE.MeshPhongMaterial({ color: 0xFF4477, emissive: 0xFF4477, emissiveIntensity: 0.3, flatShading: true });
     for (let i = 0; i < COMBAT.FLYER_POOL_SIZE; i++) {
         const flyer = new THREE.Mesh(geo, mat.clone());
         flyer.visible = false;
@@ -1799,6 +1801,8 @@ function initCombat() {
     createShardPool();
     createFragmentPool();
     createMiniboss();
+    createCoins();
+    createAllyShips();
 
     // Store ship original materials for damage flash
     shipGroup.traverse(child => {
@@ -1933,7 +1937,7 @@ function spawnTurret(pos) {
             t.position.copy(pos);
             t.visible = true;
             // Reset body color
-            t.children[0].material.color.setHex(COLORS.DUSTY_BLUE);
+            t.children[0].material.color.setHex(0xCC3366);
             t.scale.set(1, 1, 1);
             return t;
         }
@@ -2015,7 +2019,7 @@ function spawnFormationGroup(frame, ev) {
                 f.userData.flashTimer = 0;
                 f.position.copy(spawnPos).addScaledVector(frame.right, off.x).addScaledVector(frame.up, off.y + 3);
                 f.visible = true;
-                f.material.color.setHex(0x00F0FF);
+                f.material.color.setHex(0xFF4477);
                 f.scale.set(1, 1, 1);
                 group.members.push(f);
                 break;
@@ -3104,6 +3108,8 @@ function updateCombat(dt) {
     updateEndOfLevel(dt);
     updateCardEffects(dt);
     updateVoidZone(dt);
+    updateCoins(dt);
+    updateAllyShips(dt);
     updateCrosshair();
 }
 
@@ -3661,14 +3667,8 @@ function updateCardEffects(dt) {
 // CARD SYSTEM - STATE TRANSITIONS
 // ============================================================
 function checkCardPickTransitions() {
-    // First card pick: t 0.30-0.38
-    if (cardPickNumber === 0 && splineProgress >= 0.30 && splineProgress < 0.38 && gameState === 'PLAYING') {
-        enterCardPick();
-    }
-    // Second card pick: t 0.65-0.73
-    if (cardPickNumber === 1 && splineProgress >= 0.65 && splineProgress < 0.73 && gameState === 'PLAYING') {
-        enterCardPick();
-    }
+    // Card picks now triggered by shard milestones (every 10 shards)
+    // Kept as a no-op for compatibility - checkShardMilestones handles it
 }
 
 // ============================================================
@@ -3789,28 +3789,55 @@ const Audio = {
         this.shimmerGain.connect(this.master);
     },
 
+    combatIntensity: 0, // 0 = calm, 1 = frantic
+
     updateAmbient(dt) {
         if (!this.ctx) return;
-        // Shimmer notes
+
+        // Count active enemies to determine intensity
+        let activeEnemies = 0;
+        for (const d of drones) if (d.userData.active) activeEnemies++;
+        for (const t of turrets) if (t.userData.active) activeEnemies++;
+        for (const f of formationFlyers) if (f.userData.active) activeEnemies++;
+        if (bossState.active) activeEnemies += 5;
+
+        const targetIntensity = Math.min(activeEnemies / 6, 1);
+        this.combatIntensity += (targetIntensity - this.combatIntensity) * dt * 2;
+
+        // Drone louder in combat, quieter in calm
+        if (this.droneGain) {
+            this.droneGain.gain.value = 0.01 + this.combatIntensity * 0.025;
+        }
+        // Pad filter opens up in combat (more aggressive sound)
+        if (this.padFilter) {
+            const baseFreq = 200 + this.combatIntensity * 300;
+            this.padFilter.frequency.value = baseFreq + Math.sin(elapsedTime * 0.03 * Math.PI * 2) * 80;
+        }
+        if (this.padGain) {
+            this.padGain.gain.value = 0.008 + this.combatIntensity * 0.015;
+        }
+
+        // Shimmer notes - more frequent in calm, sparse in combat
         this.shimmerTimer -= dt;
+        const shimmerInterval = 3 + (1 - this.combatIntensity) * 4; // 3-7 seconds
         if (this.shimmerTimer <= 0) {
-            this.shimmerTimer = 2 + Math.random() * 3;
-            const notes = [220, 262, 294, 330, 392];
+            this.shimmerTimer = shimmerInterval;
+            // Calmer notes in peace, tenser in combat
+            const calmNotes = [220, 262, 330, 392];
+            const tenseNotes = [185, 220, 277, 370]; // minor-ish
+            const notes = this.combatIntensity > 0.5 ? tenseNotes : calmNotes;
             const freq = notes[Math.floor(Math.random() * notes.length)];
             const osc = this.ctx.createOscillator();
             const g = this.ctx.createGain();
             osc.type = 'sine'; osc.frequency.value = freq;
-            g.gain.setValueAtTime(0.012, this.ctx.currentTime);
+            const vol = 0.008 + (1 - this.combatIntensity) * 0.008;
+            g.gain.setValueAtTime(vol, this.ctx.currentTime);
             g.gain.linearRampToValueAtTime(0, this.ctx.currentTime + 1.5);
             const pan = this.ctx.createStereoPanner();
             pan.pan.value = Math.random() * 2 - 1;
             osc.connect(g); g.connect(pan); pan.connect(this.shimmerGain);
             osc.onended = () => { g.disconnect(); };
             osc.start(); osc.stop(this.ctx.currentTime + 1.6);
-        }
-        // Pad filter LFO
-        if (this.padFilter) {
-            this.padFilter.frequency.value = 250 + Math.sin(elapsedTime * 0.02 * Math.PI * 2) * 100;
         }
     },
 
@@ -4074,6 +4101,9 @@ function restartGame() {
     score = 0; shardCount = 0; totalKills = 0; playerHP = COMBAT.PLAYER_HP;
     splineProgress = 0; elapsedTime = 0; boostMeter = 1; lastSectionShown = -1;
     crashTimer = 0; shipGroup.visible = true; chatterTriggered = {};
+    lastUpgradeMilestone = 0; lastShieldMilestone = 0;
+    // Reset coins
+    for (const c of coins) { c.userData.active = true; c.visible = true; }
     cardPickNumber = 0; levelEnding = false; levelEndTimer = 0; bossDefeated = false;
     bossState.active = false; bossState.dying = false;
     if (boss) boss.visible = false;
@@ -4114,6 +4144,142 @@ function restartGame() {
 }
 
 // ============================================================
+// COIN COLLECTIBLES (scattered along path)
+// ============================================================
+const coins = [];
+const COIN_COLLECT_RADIUS = 4;
+function createCoins() {
+    const coinGeo = new THREE.TorusGeometry(0.5, 0.15, 6, 12);
+    const coinMat = new THREE.MeshPhongMaterial({ color: COLORS.CURRENCY, emissive: COLORS.CURRENCY, emissiveIntensity: 0.4, flatShading: true });
+    // Place coins along the spline at intervals, offset to sides
+    const rng = mulberry32(99999);
+    for (let i = 0; i < 80; i++) {
+        const t = 0.03 + (i / 80) * 0.92;
+        // Skip card pick zones
+        if (t > 0.29 && t < 0.39) continue;
+        if (t > 0.64 && t < 0.74) continue;
+        const frame = getSplineFrame(Math.min(t, 0.999));
+        const coin = new THREE.Mesh(coinGeo, coinMat);
+        const sideOff = (rng() - 0.5) * 20;
+        const upOff = (rng() - 0.5) * 6 + 2;
+        coin.position.copy(frame.pos);
+        coin.position.addScaledVector(frame.right, sideOff);
+        coin.position.addScaledVector(frame.up, upOff);
+        coin.userData = { active: true, value: rng() > 0.8 ? 5 : 1 };
+        // Big coins are bigger
+        if (coin.userData.value === 5) coin.scale.set(1.5, 1.5, 1.5);
+        coin.rotation.x = Math.PI / 2;
+        scene.add(coin);
+        coins.push(coin);
+    }
+}
+
+function updateCoins(dt) {
+    for (const c of coins) {
+        if (!c.userData.active) continue;
+        c.rotation.z += dt * 2;
+        if (!c.visible) continue;
+        const d = c.position.distanceTo(shipGroup.position);
+        if (d < COIN_COLLECT_RADIUS * (c.userData.value === 5 ? 1.5 : 1)) {
+            c.userData.active = false;
+            c.visible = false;
+            shardCount += c.userData.value;
+            score += c.userData.value * 25;
+            Audio.shardCollect();
+            spawnFragments(c.position, COLORS.CURRENCY, 3);
+            // Check shard milestones
+            checkShardMilestones();
+        }
+    }
+}
+
+// ============================================================
+// SHARD MILESTONES (upgrade every 10, shield every 20)
+// ============================================================
+let lastUpgradeMilestone = 0;
+let lastShieldMilestone = 0;
+
+function checkShardMilestones() {
+    // Upgrade card every 10 shards
+    const upgradeTier = Math.floor(shardCount / 10);
+    if (upgradeTier > lastUpgradeMilestone && gameState === 'PLAYING' && !levelEnding) {
+        lastUpgradeMilestone = upgradeTier;
+        if (cardPickNumber < shuffledFire.length && cardPickNumber < shuffledMod.length) {
+            enterCardPick();
+        }
+    }
+    // Restore 1 shield every 20 shards
+    const shieldTier = Math.floor(shardCount / 20);
+    if (shieldTier > lastShieldMilestone) {
+        lastShieldMilestone = shieldTier;
+        if (playerHP < COMBAT.PLAYER_HP) {
+            playerHP++;
+            // Green flash
+            spawnFragments(shipGroup.position, 0x81B29A, 6);
+            triggerChatter('shield_restore');
+        }
+    }
+}
+
+// ============================================================
+// ALLY FLYBY SHIPS
+// ============================================================
+const allyShips = [];
+function createAllyShips() {
+    const colors = { falcon: 0x81B29A, peppy: 0xE07A5F, slippy: 0x5B8BA0 };
+    for (const [name, color] of Object.entries(colors)) {
+        const group = new THREE.Group();
+        // Simple triangle ship
+        const bodyGeo = new THREE.ConeGeometry(0.6, 2.5, 4);
+        bodyGeo.rotateX(Math.PI / 2);
+        const body = new THREE.Mesh(bodyGeo, new THREE.MeshPhongMaterial({ color, flatShading: true }));
+        group.add(body);
+        const wingGeo = new THREE.BoxGeometry(2.5, 0.05, 0.6);
+        const wing = new THREE.Mesh(wingGeo, new THREE.MeshPhongMaterial({ color: 0x555555, flatShading: true }));
+        wing.position.z = 0.3;
+        group.add(wing);
+        // Engine glow
+        const glow = new THREE.Mesh(new THREE.PlaneGeometry(0.3, 0.2), new THREE.MeshBasicMaterial({ color: 0xFF8844, transparent: true, opacity: 0.8 }));
+        glow.position.z = 1.3;
+        group.add(glow);
+        group.visible = false;
+        group.userData = { name, active: false, timer: 0, startPos: new THREE.Vector3(), endPos: new THREE.Vector3() };
+        scene.add(group);
+        allyShips.push(group);
+    }
+}
+
+function triggerAllyFlyby(allyName) {
+    const ship = allyShips.find(s => s.userData.name === allyName && !s.userData.active);
+    if (!ship) return;
+    ship.userData.active = true;
+    ship.userData.timer = 0;
+    // Start from behind-left/right, fly past the player
+    const tangent = splineCurve.getTangentAt(Math.min(splineProgress, 0.999));
+    const right = new THREE.Vector3().crossVectors(tangent, _worldUp).normalize();
+    const side = Math.random() > 0.5 ? 1 : -1;
+    ship.userData.startPos.copy(shipGroup.position).addScaledVector(tangent, 20).addScaledVector(right, side * 15);
+    ship.userData.startPos.y += 3;
+    ship.userData.endPos.copy(shipGroup.position).addScaledVector(tangent, -60).addScaledVector(right, side * 8);
+    ship.userData.endPos.y += 5;
+    ship.visible = true;
+}
+
+function updateAllyShips(dt) {
+    for (const s of allyShips) {
+        if (!s.userData.active) continue;
+        s.userData.timer += dt;
+        const t = Math.min(s.userData.timer / 2.5, 1);
+        s.position.lerpVectors(s.userData.startPos, s.userData.endPos, t);
+        s.lookAt(s.userData.endPos);
+        if (t >= 1) {
+            s.userData.active = false;
+            s.visible = false;
+        }
+    }
+}
+
+// ============================================================
 // ALLY CHATTER SYSTEM
 // ============================================================
 const ALLIES = {
@@ -4137,45 +4303,49 @@ const PALETTE = [null, '#333', '#888', '#fff', '#E63988']; // 0=transparent,1=ou
 
 const CHATTER_LINES = {
     start: [
-        { ally: 'falcon', text: 'All ships check in. Ready to fly.' },
-        { ally: 'peppy', text: 'Stay sharp out there.' },
-        { ally: 'slippy', text: 'Systems nominal! Let\'s go!' }
+        { ally: 'falcon', text: 'Brutalist Squadron, check in. We\'re entering the Dead City.' },
+        { ally: 'peppy', text: 'I flew this sector 30 years ago. It was alive then.' },
+        { ally: 'slippy', text: 'Scanners show massive energy signatures. Someone\'s home.' }
     ],
     colonnade: [
-        { ally: 'peppy', text: 'Watch the columns! Don\'t clip the walls.' },
-        { ally: 'slippy', text: 'Picking up bogeys ahead!' },
-        { ally: 'falcon', text: 'Stay in formation. Pick them off.' }
+        { ally: 'peppy', text: 'The Colonnade. Built by the Architects before the Silence.' },
+        { ally: 'slippy', text: 'These pillars are over 3000 years old. Don\'t scratch them!' },
+        { ally: 'falcon', text: 'Hostiles in the plaza! They\'re guarding the ruins.' }
     ],
     labyrinth: [
-        { ally: 'peppy', text: 'Tight quarters. Keep your speed up.' },
-        { ally: 'falcon', text: 'Turrets on the walls! Take them out.' },
-        { ally: 'slippy', text: 'I can\'t shake this guy!' },
-        { ally: 'peppy', text: 'Do a barrel roll!' }
+        { ally: 'peppy', text: 'The Labyrinth. Scarpa himself couldn\'t map this place.' },
+        { ally: 'falcon', text: 'Turrets embedded in the walls. The machines built defenses.' },
+        { ally: 'slippy', text: 'These corridors are getting narrow! Hold Q or E to tilt!' },
+        { ally: 'peppy', text: 'Do a barrel roll! The old tricks still work.' }
     ],
     monolith: [
-        { ally: 'falcon', text: 'There it is. The monolith.' },
-        { ally: 'slippy', text: 'That thing is huge...' },
-        { ally: 'peppy', text: 'Focus fire. We can do this.' }
+        { ally: 'falcon', text: 'There it is. The Monolith. Source of the signal.' },
+        { ally: 'slippy', text: 'Energy readings are off the scale. What built this?' },
+        { ally: 'peppy', text: 'The Architects left it as a warning. Or a weapon.' }
     ],
     boss: [
-        { ally: 'slippy', text: 'What IS that thing?!' },
-        { ally: 'falcon', text: 'Enemy signature off the charts!' },
-        { ally: 'peppy', text: 'Hit the spikes! Find its weakness!' }
+        { ally: 'slippy', text: 'It\'s the Stellated Form! The Monolith\'s guardian!' },
+        { ally: 'falcon', text: 'It\'s been dormant for centuries. We woke it up.' },
+        { ally: 'peppy', text: 'Aim for the spikes! That\'s where its shield generators are!' }
     ],
     boss_phase2: [
-        { ally: 'slippy', text: 'It\'s getting faster!' },
-        { ally: 'peppy', text: 'Watch that beam! Barrel roll through it!' },
-        { ally: 'falcon', text: 'Almost there. Keep firing!' }
+        { ally: 'slippy', text: 'It\'s adapting! The beam weapon just came online!' },
+        { ally: 'peppy', text: 'Barrel roll through the beam! Timing is everything!' },
+        { ally: 'falcon', text: 'The Monolith is crumbling! We\'re breaking through!' }
     ],
     damage: [
-        { ally: 'peppy', text: 'You\'re hit! Hang in there!' },
-        { ally: 'slippy', text: 'Shields taking damage!' },
-        { ally: 'falcon', text: 'Stay focused. You got this.' }
+        { ally: 'peppy', text: 'You\'re hit! Collect shards to restore shields!' },
+        { ally: 'slippy', text: 'Shield integrity dropping!' },
+        { ally: 'falcon', text: 'Stay in the fight. Grab those gold rings.' }
     ],
     card_pick: [
-        { ally: 'peppy', text: 'Intel coming in. Choose your upgrade.' },
-        { ally: 'slippy', text: 'Ooh, shiny new tech!' },
-        { ally: 'falcon', text: 'Pick wisely. Every choice counts.' }
+        { ally: 'peppy', text: 'Salvaged tech incoming. The Architects left this behind.' },
+        { ally: 'slippy', text: 'Ooh! Ancient weapon mods! Dibs on the leftovers!' },
+        { ally: 'falcon', text: 'Choose your upgrade. We don\'t get second chances out here.' }
+    ],
+    shield_restore: [
+        { ally: 'slippy', text: 'Shield matrix recharged! Keep collecting!' },
+        { ally: 'peppy', text: 'Shields restored. The shards power everything here.' }
     ]
 };
 
@@ -4216,6 +4386,8 @@ function triggerChatter(key) {
     if (!lines) return;
     const line = lines[Math.floor(Math.random() * lines.length)];
     showComm(line.ally, line.text);
+    // Trigger ally flyby
+    triggerAllyFlyby(line.ally);
 }
 
 function updateComm(dt) {
