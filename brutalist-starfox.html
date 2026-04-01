@@ -2,7 +2,9 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
 <title>BRUTFOX</title>
 <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap" rel="stylesheet">
 <style>
@@ -75,23 +77,58 @@ canvas { display: block; }
 #controls-overlay .hint { color: #666; font-size: 11px; margin-top: 20px; }
 /* Mobile touch controls */
 #touch-controls { position: fixed; inset: 0; z-index: 11; display: none; pointer-events: none; }
-#touch-joystick-zone { position: absolute; left: 0; bottom: 0; width: 40%; height: 50%; pointer-events: auto; touch-action: none; }
-#touch-joystick-base { position: absolute; left: 60px; bottom: 60px; width: 100px; height: 100px; border: 2px solid rgba(255,255,255,0.2); border-radius: 50%; }
-#touch-joystick-knob { position: absolute; left: 85px; bottom: 85px; width: 30px; height: 30px; background: rgba(255,255,255,0.4); border-radius: 50%; transition: none; }
-#touch-fire-btn { position: absolute; right: 30px; bottom: 60px; width: 70px; height: 70px; border: 2px solid rgba(255,180,100,0.4); border-radius: 50%; pointer-events: auto; touch-action: none; display: flex; align-items: center; justify-content: center; color: rgba(255,180,100,0.6); font-size: 10px; letter-spacing: 1px; }
-#touch-fire-btn.active { background: rgba(255,180,100,0.2); }
-#touch-roll-l { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); width: 50px; height: 80px; border: 1px solid rgba(255,255,255,0.15); border-radius: 8px; pointer-events: auto; touch-action: none; display: flex; align-items: center; justify-content: center; color: rgba(255,255,255,0.3); font-size: 10px; }
-#touch-roll-r { position: absolute; right: 110px; top: 50%; transform: translateY(-50%); width: 50px; height: 80px; border: 1px solid rgba(255,255,255,0.15); border-radius: 8px; pointer-events: auto; touch-action: none; display: flex; align-items: center; justify-content: center; color: rgba(255,255,255,0.3); font-size: 10px; }
-#touch-boost-btn { position: absolute; right: 30px; bottom: 150px; width: 50px; height: 50px; border: 1px solid rgba(255,210,100,0.3); border-radius: 8px; pointer-events: auto; touch-action: none; display: flex; align-items: center; justify-content: center; color: rgba(255,210,100,0.4); font-size: 9px; }
+#touch-joystick-zone { position: absolute; left: 0; bottom: 0; width: 50%; height: 60%; pointer-events: auto; touch-action: none; }
+#touch-joystick-base { position: absolute; left: 30px; bottom: 40px; width: 120px; height: 120px; border: 2px solid rgba(255,255,255,0.15); border-radius: 50%; }
+#touch-joystick-knob { position: absolute; left: 60px; bottom: 70px; width: 40px; height: 40px; background: rgba(255,255,255,0.35); border-radius: 50%; }
+#touch-fire-zone { position: absolute; right: 0; bottom: 0; width: 50%; height: 60%; pointer-events: auto; touch-action: none; }
+#touch-fire-btn { position: absolute; right: 25px; bottom: 35px; width: 90px; height: 90px; border: 2px solid rgba(255,180,100,0.35); border-radius: 50%; pointer-events: auto; touch-action: none; display: flex; align-items: center; justify-content: center; color: rgba(255,180,100,0.5); font-size: 12px; letter-spacing: 1px; }
+#touch-fire-btn.active { background: rgba(255,180,100,0.25); border-color: rgba(255,180,100,0.6); }
+#touch-roll-l { position: absolute; left: 0; top: 35%; width: 44px; height: 70px; border: 1px solid rgba(255,255,255,0.12); border-radius: 6px; pointer-events: auto; touch-action: none; display: flex; align-items: center; justify-content: center; color: rgba(255,255,255,0.25); font-size: 9px; writing-mode: vertical-rl; }
+#touch-roll-r { position: absolute; right: 0; top: 35%; width: 44px; height: 70px; border: 1px solid rgba(255,255,255,0.12); border-radius: 6px; pointer-events: auto; touch-action: none; display: flex; align-items: center; justify-content: center; color: rgba(255,255,255,0.25); font-size: 9px; writing-mode: vertical-rl; }
+#touch-boost-btn { position: absolute; right: 130px; bottom: 45px; width: 60px; height: 60px; border: 1px solid rgba(255,210,100,0.25); border-radius: 50%; pointer-events: auto; touch-action: none; display: flex; align-items: center; justify-content: center; color: rgba(255,210,100,0.35); font-size: 10px; }
+#touch-boost-btn.active { background: rgba(255,210,100,0.15); border-color: rgba(255,210,100,0.5); }
+#touch-autofire { position: absolute; right: 25px; bottom: 140px; padding: 6px 12px; border: 1px solid rgba(255,255,255,0.2); border-radius: 4px; pointer-events: auto; touch-action: none; color: rgba(255,255,255,0.4); font-size: 9px; letter-spacing: 1px; }
+#touch-autofire.on { color: #FFD166; border-color: rgba(255,210,100,0.4); }
+/* Mobile responsive */
+@media (max-width: 900px), (max-height: 500px) {
+    #title-screen h1 { font-size: 28px; letter-spacing: 4px; }
+    #title-screen .subtitle { font-size: 12px; margin-bottom: 24px; }
+    #score-display { font-size: 16px !important; top: 8px !important; left: 8px !important; }
+    #shard-display { font-size: 11px !important; top: 8px !important; right: 8px !important; }
+    #hp-shields { bottom: 10px !important; left: 8px !important; }
+    .shield { width: 12px !important; height: 14px !important; }
+    #boost-bar { bottom: 30px !important; left: 8px !important; width: 80px !important; }
+    #active-cards { bottom: 10px !important; right: 8px !important; }
+    .active-card { width: 32px !important; height: 32px !important; }
+    #boss-hp-bar { top: 32px !important; width: 200px !important; }
+    #section-title { font-size: 22px !important; letter-spacing: 4px !important; }
+    #comm-box { min-width: 0 !important; max-width: 280px !important; bottom: 50px !important; padding: 8px 12px 8px 56px !important; font-size: 11px !important; }
+    #comm-portrait { width: 36px !important; height: 36px !important; }
+    #comm-text { font-size: 11px !important; }
+    .card { width: 140px !important; height: 200px !important; padding: 12px 10px 8px !important; }
+    .card-icon { width: 40px !important; height: 40px !important; margin-bottom: 6px !important; }
+    .card-icon svg { width: 32px !important; height: 32px !important; }
+    .card-name { font-size: 11px !important; }
+    .card-desc { font-size: 9px !important; }
+    .card-category { font-size: 7px !important; }
+    #card-overlay { gap: 10px !important; }
+    #game-over h1 { font-size: 32px !important; letter-spacing: 4px !important; }
+    #results-screen h1 { font-size: 24px !important; }
+    .result-row { font-size: 13px !important; }
+    #mute-btn { top: 28px !important; font-size: 10px !important; }
+    #controls-overlay td { font-size: 12px !important; padding: 4px 10px !important; }
+}
 </style>
 </head>
 <body>
 <div id="touch-controls">
   <div id="touch-joystick-zone"><div id="touch-joystick-base"></div><div id="touch-joystick-knob"></div></div>
+  <div id="touch-fire-zone"></div>
   <div id="touch-fire-btn">FIRE</div>
-  <div id="touch-roll-l">◀ ROLL</div>
-  <div id="touch-roll-r">ROLL ▶</div>
   <div id="touch-boost-btn">BOOST</div>
+  <div id="touch-roll-l">ROLL</div>
+  <div id="touch-roll-r">ROLL</div>
+  <div id="touch-autofire">AUTO</div>
 </div>
 <div id="title-screen">
   <h1>BRUTALIST STARFOX</h1>
@@ -823,114 +860,137 @@ function initInput() {
 
 let isMobile = false;
 let touchJoystickId = null;
-const touchJoystickCenter = { x: 110, y: 0 };
+let touchFireId = null;
+let autoFireEnabled = false;
+const touchJoystickCenter = { x: 0, y: 0 };
 
 function initTouchControls() {
-    // Detect touch device
     const hasTouchScreen = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
     if (!hasTouchScreen) return;
     isMobile = true;
 
+    // Prevent all default touch behavior on the body
+    document.body.style.touchAction = 'none';
+    document.body.style.webkitTouchCallout = 'none';
+    document.body.style.webkitUserSelect = 'none';
+    document.body.style.userSelect = 'none';
+
     const tc = document.getElementById('touch-controls');
-    tc.style.display = 'block';
-    // Hide mouse crosshair on mobile
+    // Don't show yet - startGame will show it
     document.getElementById('crosshair').style.display = 'none';
 
-    const joyZone = document.getElementById('touch-joystick-zone');
     const knob = document.getElementById('touch-joystick-knob');
     const base = document.getElementById('touch-joystick-base');
 
-    // Joystick
+    // === LEFT SIDE: Joystick for movement ===
+    const joyZone = document.getElementById('touch-joystick-zone');
+
     joyZone.addEventListener('touchstart', (e) => {
         e.preventDefault();
+        if (touchJoystickId !== null) return;
         const touch = e.changedTouches[0];
         touchJoystickId = touch.identifier;
         touchJoystickCenter.x = touch.clientX;
         touchJoystickCenter.y = touch.clientY;
-        base.style.left = (touch.clientX - 50) + 'px';
+        base.style.left = (touch.clientX - 60) + 'px';
         base.style.bottom = 'auto';
-        base.style.top = (touch.clientY - 50) + 'px';
-        knob.style.left = (touch.clientX - 15) + 'px';
+        base.style.top = (touch.clientY - 60) + 'px';
+        base.style.opacity = '1';
+        knob.style.left = (touch.clientX - 20) + 'px';
         knob.style.bottom = 'auto';
-        knob.style.top = (touch.clientY - 15) + 'px';
+        knob.style.top = (touch.clientY - 20) + 'px';
     }, { passive: false });
 
     joyZone.addEventListener('touchmove', (e) => {
         e.preventDefault();
         for (const touch of e.changedTouches) {
-            if (touch.identifier === touchJoystickId) {
-                const dx = touch.clientX - touchJoystickCenter.x;
-                const dy = touch.clientY - touchJoystickCenter.y;
-                const dist = Math.sqrt(dx*dx + dy*dy);
-                const maxDist = 50;
-                const clampedDist = Math.min(dist, maxDist);
-                const angle = Math.atan2(dy, dx);
-                const nx = Math.cos(angle) * clampedDist;
-                const ny = Math.sin(angle) * clampedDist;
-
-                knob.style.left = (touchJoystickCenter.x + nx - 15) + 'px';
-                knob.style.top = (touchJoystickCenter.y + ny - 15) + 'px';
-
-                // Map to input
-                input.mouseNormX = (nx / maxDist);
-                input.mouseNormY = -(ny / maxDist);
-                // Also set aim NDC for shooting direction
-                aimNDC.set(input.mouseNormX * 0.5, input.mouseNormY * 0.5);
-            }
+            if (touch.identifier !== touchJoystickId) continue;
+            const dx = touch.clientX - touchJoystickCenter.x;
+            const dy = touch.clientY - touchJoystickCenter.y;
+            const dist = Math.sqrt(dx*dx + dy*dy);
+            const maxDist = 55;
+            const clamped = Math.min(dist, maxDist);
+            const angle = Math.atan2(dy, dx);
+            const nx = Math.cos(angle) * clamped;
+            const ny = Math.sin(angle) * clamped;
+            knob.style.left = (touchJoystickCenter.x + nx - 20) + 'px';
+            knob.style.top = (touchJoystickCenter.y + ny - 20) + 'px';
+            input.mouseNormX = nx / maxDist;
+            input.mouseNormY = -(ny / maxDist);
+            aimNDC.set(input.mouseNormX * 0.4, input.mouseNormY * 0.4);
         }
     }, { passive: false });
 
     joyZone.addEventListener('touchend', (e) => {
         for (const touch of e.changedTouches) {
-            if (touch.identifier === touchJoystickId) {
-                touchJoystickId = null;
-                input.mouseNormX = 0;
-                input.mouseNormY = 0;
-                // Reset knob position
-                knob.style.left = '85px';
-                knob.style.top = '';
-                knob.style.bottom = '85px';
-                base.style.left = '60px';
-                base.style.top = '';
-                base.style.bottom = '60px';
-            }
+            if (touch.identifier !== touchJoystickId) continue;
+            touchJoystickId = null;
+            input.mouseNormX = 0; input.mouseNormY = 0;
+            base.style.opacity = '0.5';
+            base.style.left = '30px'; base.style.top = ''; base.style.bottom = '40px';
+            knob.style.left = '60px'; knob.style.top = ''; knob.style.bottom = '70px';
         }
-    });
+    }, { passive: false });
 
-    // Fire button
+    // === RIGHT SIDE: Tap anywhere to fire, drag to aim ===
+    const fireZone = document.getElementById('touch-fire-zone');
+    fireZone.addEventListener('touchstart', (e) => {
+        e.preventDefault();
+        if (!autoFireEnabled) { isFireHeld = true; }
+    }, { passive: false });
+    fireZone.addEventListener('touchmove', (e) => {
+        e.preventDefault();
+        // Drag on right side adjusts aim
+        const touch = e.changedTouches[0];
+        const nx = (touch.clientX / window.innerWidth) * 2 - 1;
+        const ny = -((touch.clientY / window.innerHeight) * 2 - 1);
+        aimNDC.set(nx * 0.6, ny * 0.6);
+    }, { passive: false });
+    fireZone.addEventListener('touchend', (e) => {
+        if (!autoFireEnabled) { isFireHeld = false; }
+    }, { passive: false });
+
+    // Fire button (dedicated)
     const fireBtn = document.getElementById('touch-fire-btn');
     fireBtn.addEventListener('touchstart', (e) => {
-        e.preventDefault();
-        isFireHeld = true;
-        fireBtn.classList.add('active');
+        e.preventDefault(); e.stopPropagation();
+        isFireHeld = true; fireBtn.classList.add('active');
     }, { passive: false });
     fireBtn.addEventListener('touchend', (e) => {
-        isFireHeld = false;
+        e.stopPropagation();
+        if (!autoFireEnabled) { isFireHeld = false; }
         fireBtn.classList.remove('active');
     });
 
+    // Auto-fire toggle
+    const autoBtn = document.getElementById('touch-autofire');
+    autoBtn.addEventListener('touchstart', (e) => {
+        e.preventDefault(); e.stopPropagation();
+        autoFireEnabled = !autoFireEnabled;
+        autoBtn.classList.toggle('on', autoFireEnabled);
+        autoBtn.textContent = autoFireEnabled ? 'AUTO ●' : 'AUTO';
+        if (autoFireEnabled) isFireHeld = true;
+        else isFireHeld = false;
+    }, { passive: false });
+
     // Roll buttons
     document.getElementById('touch-roll-l').addEventListener('touchstart', (e) => {
-        e.preventDefault();
-        triggerBarrelRoll(-1);
+        e.preventDefault(); e.stopPropagation(); triggerBarrelRoll(-1);
     }, { passive: false });
     document.getElementById('touch-roll-r').addEventListener('touchstart', (e) => {
-        e.preventDefault();
-        triggerBarrelRoll(1);
+        e.preventDefault(); e.stopPropagation(); triggerBarrelRoll(1);
     }, { passive: false });
 
     // Boost button
     const boostBtn = document.getElementById('touch-boost-btn');
     boostBtn.addEventListener('touchstart', (e) => {
-        e.preventDefault();
-        input.keys['ShiftLeft'] = true;
+        e.preventDefault(); e.stopPropagation();
+        input.keys['ShiftLeft'] = true; boostBtn.classList.add('active');
     }, { passive: false });
-    boostBtn.addEventListener('touchend', () => {
-        input.keys['ShiftLeft'] = false;
+    boostBtn.addEventListener('touchend', (e) => {
+        e.stopPropagation();
+        input.keys['ShiftLeft'] = false; boostBtn.classList.remove('active');
     });
-
-    // Auto-fire on mobile (hold anywhere on right side)
-    // Already handled by fire button
 }
 
 function triggerBarrelRoll(direction) {
