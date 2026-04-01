@@ -688,6 +688,501 @@ function updateSpeedLines(dt) {
 }
 
 // ============================================================
+// ARCHITECTURE - SECTION BOUNDARIES
+// ============================================================
+const SECTIONS = {
+    COLONNADE: { start: 0.00, end: 0.30 },
+    GAP1:      { start: 0.30, end: 0.38 },
+    LABYRINTH: { start: 0.38, end: 0.65 },
+    GAP2:      { start: 0.65, end: 0.73 },
+    MONOLITH:  { start: 0.73, end: 0.95 },
+    END:       { start: 0.95, end: 1.00 }
+};
+
+// Seeded PRNG (mulberry32)
+function mulberry32(seed) {
+    return function() {
+        seed |= 0; seed = seed + 0x6D2B79F5 | 0;
+        let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+        t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+        return ((t ^ t >>> 14) >>> 0) / 4294967296;
+    };
+}
+
+let archGroup; // parent group for all architecture
+const archObjects = []; // flat list for culling
+
+function getSplineFrame(t) {
+    const pos = splineCurve.getPointAt(t);
+    const tan = splineCurve.getTangentAt(t);
+    const right = new THREE.Vector3().crossVectors(tan, _worldUp).normalize();
+    const up = new THREE.Vector3().crossVectors(right, tan).normalize();
+    return { pos, tan, right, up };
+}
+
+// Shared materials (reused across all sections)
+const ARCH_MATS = {};
+function initArchMaterials() {
+    ARCH_MATS.warmConcrete = new THREE.MeshLambertMaterial({ color: COLORS.CONCRETE, flatShading: true });
+    ARCH_MATS.dustyRose = new THREE.MeshLambertMaterial({ color: COLORS.DUSTY_ROSE, flatShading: true });
+    ARCH_MATS.coral = new THREE.MeshLambertMaterial({ color: COLORS.CORAL, flatShading: true });
+    ARCH_MATS.coolConcrete = new THREE.MeshLambertMaterial({ color: COLORS.COOL_CONCRETE, flatShading: true });
+    ARCH_MATS.dustyBlue = new THREE.MeshLambertMaterial({ color: COLORS.DUSTY_BLUE, flatShading: true });
+    ARCH_MATS.sage = new THREE.MeshLambertMaterial({ color: COLORS.SAGE, flatShading: true });
+    ARCH_MATS.terracotta = new THREE.MeshLambertMaterial({ color: COLORS.TERRACOTTA, flatShading: true });
+    ARCH_MATS.darkVoid = new THREE.MeshLambertMaterial({ color: 0x2A2A2A, flatShading: true });
+    ARCH_MATS.pool = new THREE.MeshLambertMaterial({
+        color: COLORS.DUSTY_BLUE,
+        flatShading: true,
+        transparent: true,
+        opacity: 0.3
+    });
+}
+
+function addArch(mesh) {
+    archGroup.add(mesh);
+    archObjects.push(mesh);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+}
+
+// ============================================================
+// SECTION 1: THE COLONNADE (Bofill-inspired)
+// ============================================================
+function buildColonnade() {
+    const rng = mulberry32(12345);
+    const sec = SECTIONS.COLONNADE;
+    const steps = 30;
+
+    for (let i = 0; i < steps; i++) {
+        const t = sec.start + (i / steps) * (sec.end - sec.start);
+        const frame = getSplineFrame(t);
+        const groundY = -18;
+
+        // --- Pillars on both sides ---
+        for (const side of [-1, 1]) {
+            const dist = 14 + rng() * 4;
+            const height = 35 + rng() * 20;
+            const pillarGeo = new THREE.BoxGeometry(2, height, 2);
+            const pillar = new THREE.Mesh(pillarGeo, ARCH_MATS.warmConcrete);
+            pillar.position.copy(frame.pos);
+            pillar.position.addScaledVector(frame.right, side * dist);
+            pillar.position.y = groundY + height / 2;
+            addArch(pillar);
+        }
+
+        // --- Wall slabs behind pillars (every other step) ---
+        if (i % 2 === 0) {
+            for (const side of [-1, 1]) {
+                const wallDist = 22 + rng() * 3;
+                const wallH = 40 + rng() * 20;
+                const wallW = 15 + rng() * 8;
+                const wallGeo = new THREE.BoxGeometry(2, wallH, wallW);
+                const wall = new THREE.Mesh(wallGeo, ARCH_MATS.dustyRose);
+                wall.position.copy(frame.pos);
+                wall.position.addScaledVector(frame.right, side * wallDist);
+                wall.position.y = groundY + wallH / 2;
+                // Rotate to face path
+                wall.lookAt(frame.pos);
+                wall.rotation.x = 0;
+                wall.rotation.z = 0;
+                addArch(wall);
+
+                // Void openings in walls
+                const voidCount = 1 + Math.floor(rng() * 3);
+                for (let v = 0; v < voidCount; v++) {
+                    const voidH = 6 + rng() * 8;
+                    const voidW = 3 + rng() * 4;
+                    const voidGeo = new THREE.BoxGeometry(2.5, voidH, voidW);
+                    const voidMesh = new THREE.Mesh(voidGeo, ARCH_MATS.darkVoid);
+                    voidMesh.position.copy(wall.position);
+                    voidMesh.position.y = groundY + 8 + rng() * (wallH - 16);
+                    voidMesh.position.addScaledVector(frame.right, side * -0.5);
+                    const zOff = (rng() - 0.5) * (wallW * 0.6);
+                    voidMesh.position.addScaledVector(frame.tan, zOff);
+                    voidMesh.rotation.copy(wall.rotation);
+                    addArch(voidMesh);
+
+                    // Coral inner face on some voids
+                    if (rng() > 0.6) {
+                        const accentGeo = new THREE.BoxGeometry(0.5, voidH - 1, voidW - 1);
+                        const accent = new THREE.Mesh(accentGeo, ARCH_MATS.coral);
+                        accent.position.copy(voidMesh.position);
+                        accent.position.addScaledVector(frame.right, side * 0.8);
+                        accent.rotation.copy(wall.rotation);
+                        addArch(accent);
+                    }
+                }
+            }
+        }
+
+        // --- Overhead lintels (occasional) ---
+        if (i % 5 === 0 && i > 2) {
+            const lintelW = 30 + rng() * 8;
+            const lintelH = 2;
+            const lintelD = 4 + rng() * 3;
+            const lintelGeo = new THREE.BoxGeometry(lintelW, lintelH, lintelD);
+            const lintel = new THREE.Mesh(lintelGeo,
+                rng() > 0.5 ? ARCH_MATS.coral : ARCH_MATS.warmConcrete);
+            lintel.position.copy(frame.pos);
+            lintel.position.y = groundY + 38 + rng() * 15;
+            // Orient lintel perpendicular to path
+            lintel.lookAt(frame.pos.clone().add(frame.tan));
+            lintel.rotation.x = 0;
+            lintel.rotation.z = 0;
+            addArch(lintel);
+        }
+    }
+
+    // --- Reflecting pool ---
+    const poolStart = getSplineFrame(sec.start + 0.02);
+    const poolEnd = getSplineFrame(sec.end - 0.02);
+    const poolLength = poolStart.pos.distanceTo(poolEnd.pos);
+    const poolMid = new THREE.Vector3().lerpVectors(poolStart.pos, poolEnd.pos, 0.5);
+    const poolGeo = new THREE.PlaneGeometry(20, poolLength);
+    const pool = new THREE.Mesh(poolGeo, ARCH_MATS.pool);
+    pool.rotation.x = -Math.PI / 2;
+    pool.position.copy(poolMid);
+    pool.position.y = -17.9;
+    // Orient pool along the path
+    pool.lookAt(poolEnd.pos.x, -17.9, poolEnd.pos.z);
+    pool.rotation.x = -Math.PI / 2;
+    archGroup.add(pool);
+    archObjects.push(pool);
+
+    // --- Narrow gap set piece at midpoint ---
+    const midT = (sec.start + sec.end) / 2;
+    const midFrame = getSplineFrame(midT);
+    for (const side of [-1, 1]) {
+        const gapWallGeo = new THREE.BoxGeometry(3, 55, 12);
+        const gapWall = new THREE.Mesh(gapWallGeo, ARCH_MATS.dustyRose);
+        gapWall.position.copy(midFrame.pos);
+        gapWall.position.addScaledVector(midFrame.right, side * 7);
+        gapWall.position.y = -18 + 27.5;
+        gapWall.lookAt(midFrame.pos);
+        gapWall.rotation.x = 0;
+        gapWall.rotation.z = 0;
+        addArch(gapWall);
+    }
+}
+
+// ============================================================
+// SECTION 2: THE LABYRINTH (Scarpa-inspired)
+// ============================================================
+function buildLabyrinth() {
+    const rng = mulberry32(67890);
+    const sec = SECTIONS.LABYRINTH;
+    const steps = 35;
+    const groundY = -18;
+
+    for (let i = 0; i < steps; i++) {
+        const t = sec.start + (i / steps) * (sec.end - sec.start);
+        const frame = getSplineFrame(t);
+
+        // --- Corridor walls (closer, taller) ---
+        for (const side of [-1, 1]) {
+            const dist = 10 + rng() * 6;
+            const height = 55 + rng() * 30;
+            const depth = 8 + rng() * 10;
+            const wallGeo = new THREE.BoxGeometry(3, height, depth);
+            const wall = new THREE.Mesh(wallGeo, ARCH_MATS.coolConcrete);
+            wall.position.copy(frame.pos);
+            wall.position.addScaledVector(frame.right, side * dist);
+            wall.position.y = groundY + height / 2;
+            wall.lookAt(frame.pos);
+            wall.rotation.x = 0;
+            wall.rotation.z = 0;
+            addArch(wall);
+
+            // Layered openings (rectangular holes)
+            if (rng() > 0.4) {
+                const holeH = 8 + rng() * 12;
+                const holeW = 4 + rng() * 5;
+                const holeGeo = new THREE.BoxGeometry(4, holeH, holeW);
+                const hole = new THREE.Mesh(holeGeo, ARCH_MATS.darkVoid);
+                hole.position.copy(wall.position);
+                hole.position.y = groundY + 15 + rng() * 25;
+                hole.rotation.copy(wall.rotation);
+                addArch(hole);
+            }
+
+            // Stepped bases (Scarpa detail)
+            if (rng() > 0.5) {
+                for (let s = 0; s < 3; s++) {
+                    const stepW = 4 - s * 0.6;
+                    const stepH = 2;
+                    const stepD = depth + 2 - s * 1;
+                    const stepGeo = new THREE.BoxGeometry(stepW, stepH, stepD);
+                    const stepMat = s === 2 ? ARCH_MATS.sage : ARCH_MATS.coolConcrete;
+                    const step = new THREE.Mesh(stepGeo, stepMat);
+                    step.position.copy(wall.position);
+                    step.position.y = groundY + s * 2 + 1;
+                    step.position.addScaledVector(frame.right, side * -1);
+                    step.rotation.copy(wall.rotation);
+                    addArch(step);
+                }
+            }
+        }
+
+        // --- Cantilevered platforms ---
+        if (i % 3 === 0) {
+            const side = rng() > 0.5 ? 1 : -1;
+            const platW = 8 + rng() * 10;
+            const platD = 6 + rng() * 6;
+            const platH = 1.0 + rng() * 0.5;
+            const platGeo = new THREE.BoxGeometry(platW, platH, platD);
+            const platMat = rng() > 0.5 ? ARCH_MATS.dustyBlue : ARCH_MATS.coolConcrete;
+            const plat = new THREE.Mesh(platGeo, platMat);
+            plat.position.copy(frame.pos);
+            plat.position.addScaledVector(frame.right, side * (5 + rng() * 6));
+            plat.position.y = groundY + 18 + rng() * 25;
+            plat.lookAt(frame.pos);
+            plat.rotation.x = 0;
+            plat.rotation.z = 0;
+            addArch(plat);
+        }
+
+        // --- Interlocking volumes (stacked boxes) ---
+        if (i % 4 === 0) {
+            const numBoxes = 2 + Math.floor(rng() * 3);
+            const baseSide = rng() > 0.5 ? 1 : -1;
+            for (let b = 0; b < numBoxes; b++) {
+                const bw = 4 + rng() * 8;
+                const bh = 5 + rng() * 15;
+                const bd = 4 + rng() * 8;
+                const boxGeo = new THREE.BoxGeometry(bw, bh, bd);
+                const boxMats = [ARCH_MATS.coolConcrete, ARCH_MATS.dustyBlue, ARCH_MATS.sage];
+                const box = new THREE.Mesh(boxGeo, boxMats[Math.floor(rng() * boxMats.length)]);
+                box.position.copy(frame.pos);
+                box.position.addScaledVector(frame.right, baseSide * (12 + rng() * 8));
+                box.position.y = groundY + bh / 2 + b * (5 + rng() * 8);
+                box.position.addScaledVector(frame.tan, (rng() - 0.5) * 6);
+                // Slight rotation for organic feel
+                box.rotation.y = (rng() - 0.5) * 0.3;
+                addArch(box);
+            }
+        }
+
+        // --- Ground channels (perpendicular to path) ---
+        if (i % 2 === 0) {
+            const chanW = 18 + rng() * 12;
+            const chanGeo = new THREE.BoxGeometry(chanW, 0.5, 0.4);
+            const chan = new THREE.Mesh(chanGeo, ARCH_MATS.darkVoid);
+            chan.position.copy(frame.pos);
+            chan.position.y = groundY - 0.15;
+            chan.lookAt(frame.pos.clone().add(frame.tan));
+            chan.rotation.x = 0;
+            chan.rotation.z = 0;
+            addArch(chan);
+        }
+    }
+
+    // --- Bridge set piece ---
+    const bridgeT = (sec.start + sec.end) / 2;
+    const bridgeFrame = getSplineFrame(bridgeT);
+    const bridgeGeo = new THREE.BoxGeometry(35, 3, 10);
+    const bridge = new THREE.Mesh(bridgeGeo, ARCH_MATS.coolConcrete);
+    bridge.position.copy(bridgeFrame.pos);
+    bridge.position.y = bridgeFrame.pos.y + 20;
+    bridge.lookAt(bridgeFrame.pos.clone().add(bridgeFrame.tan));
+    bridge.rotation.x = 0;
+    bridge.rotation.z = 0;
+    addArch(bridge);
+    bridge.userData.isBridge = true; // Tag for Phase 3 crumbling
+}
+
+// ============================================================
+// SECTION 3: THE MONOLITH
+// ============================================================
+function buildMonolith() {
+    const rng = mulberry32(24680);
+    const sec = SECTIONS.MONOLITH;
+    const groundY = -18;
+
+    // Find the center of this section on the spline
+    const centerT = (sec.start + sec.end) / 2;
+    const centerFrame = getSplineFrame(centerT);
+
+    // --- THE MONOLITH: massive central structure ---
+    const monoW = 40, monoH = 65, monoD = 40;
+    const monoGeo = new THREE.BoxGeometry(monoW, monoH, monoD);
+    const monolith = new THREE.Mesh(monoGeo, ARCH_MATS.warmConcrete);
+    // Position to the side of the path so the ship spirals around it
+    monolith.position.copy(centerFrame.pos);
+    monolith.position.addScaledVector(centerFrame.right, 35);
+    monolith.position.y = groundY + monoH / 2;
+    addArch(monolith);
+
+    // Stepped top setbacks
+    const setbacks = [
+        { w: 34, h: 10, d: 34, yOff: monoH },
+        { w: 26, h: 8, d: 26, yOff: monoH + 10 },
+        { w: 18, h: 6, d: 18, yOff: monoH + 18 }
+    ];
+    for (const sb of setbacks) {
+        const sbGeo = new THREE.BoxGeometry(sb.w, sb.h, sb.d);
+        const sbMesh = new THREE.Mesh(sbGeo, ARCH_MATS.warmConcrete);
+        sbMesh.position.copy(monolith.position);
+        sbMesh.position.y = groundY + sb.yOff + sb.h / 2;
+        addArch(sbMesh);
+    }
+
+    // Recessed voids on all 4 faces
+    const faces = [
+        { axis: 'x', sign: 1 },
+        { axis: 'x', sign: -1 },
+        { axis: 'z', sign: 1 },
+        { axis: 'z', sign: -1 }
+    ];
+    for (const face of faces) {
+        const voidCount = 4 + Math.floor(rng() * 4);
+        for (let v = 0; v < voidCount; v++) {
+            const vw = 4 + rng() * 8;
+            const vh = 5 + rng() * 12;
+            const vd = 3 + rng() * 4;
+            const voidGeo = new THREE.BoxGeometry(
+                face.axis === 'x' ? vd : vw,
+                vh,
+                face.axis === 'z' ? vd : vw
+            );
+            const voidMesh = new THREE.Mesh(voidGeo, ARCH_MATS.darkVoid);
+            voidMesh.position.copy(monolith.position);
+            voidMesh.position.y = groundY + 8 + rng() * (monoH - 16);
+            if (face.axis === 'x') {
+                voidMesh.position.x += face.sign * (monoW / 2 - vd / 2 + 0.5);
+                voidMesh.position.z += (rng() - 0.5) * (monoD - vw - 2);
+            } else {
+                voidMesh.position.z += face.sign * (monoD / 2 - vd / 2 + 0.5);
+                voidMesh.position.x += (rng() - 0.5) * (monoW - vw - 2);
+            }
+            addArch(voidMesh);
+
+            // Accent colored panels inside some recesses
+            if (rng() > 0.5) {
+                const panelMats = [ARCH_MATS.coral, ARCH_MATS.dustyBlue, ARCH_MATS.sage, ARCH_MATS.terracotta, ARCH_MATS.dustyRose];
+                const panelMat = panelMats[Math.floor(rng() * panelMats.length)];
+                const panelGeo = new THREE.BoxGeometry(
+                    face.axis === 'x' ? 0.5 : vw - 1,
+                    vh - 1,
+                    face.axis === 'z' ? 0.5 : vw - 1
+                );
+                const panel = new THREE.Mesh(panelGeo, panelMat);
+                panel.position.copy(voidMesh.position);
+                if (face.axis === 'x') {
+                    panel.position.x += face.sign * 1;
+                } else {
+                    panel.position.z += face.sign * 1;
+                }
+                addArch(panel);
+            }
+        }
+    }
+
+    // --- Facade panels (will blow off in Phase 3) ---
+    const panelColors = [ARCH_MATS.coral, ARCH_MATS.dustyBlue, ARCH_MATS.sage, ARCH_MATS.terracotta];
+    for (const face of faces) {
+        const panelCount = 2 + Math.floor(rng() * 3);
+        for (let p = 0; p < panelCount; p++) {
+            const pw = 5 + rng() * 6;
+            const ph = 5 + rng() * 8;
+            const panelGeo = new THREE.BoxGeometry(
+                face.axis === 'x' ? 1.5 : pw,
+                ph,
+                face.axis === 'z' ? 1.5 : pw
+            );
+            const panel = new THREE.Mesh(panelGeo, panelColors[Math.floor(rng() * panelColors.length)]);
+            panel.position.copy(monolith.position);
+            panel.position.y = groundY + 10 + rng() * (monoH - 20);
+            if (face.axis === 'x') {
+                panel.position.x += face.sign * (monoW / 2 + 0.75);
+                panel.position.z += (rng() - 0.5) * (monoD - pw - 4);
+            } else {
+                panel.position.z += face.sign * (monoD / 2 + 0.75);
+                panel.position.x += (rng() - 0.5) * (monoW - pw - 4);
+            }
+            panel.userData.isFacadePanel = true; // Tag for Phase 3
+            addArch(panel);
+        }
+    }
+
+    // --- Arena floor grid ---
+    const gridSize = 100;
+    const gridStep = 8;
+    for (let gx = -gridSize / 2; gx <= gridSize / 2; gx += gridStep) {
+        const lineGeo = new THREE.BoxGeometry(0.3, 0.15, gridSize);
+        const line = new THREE.Mesh(lineGeo, ARCH_MATS.darkVoid);
+        line.position.copy(monolith.position);
+        line.position.x += gx - monoW / 2 + 20;
+        line.position.y = groundY + 0.08;
+        archGroup.add(line);
+        archObjects.push(line);
+    }
+    for (let gz = -gridSize / 2; gz <= gridSize / 2; gz += gridStep) {
+        const lineGeo = new THREE.BoxGeometry(gridSize, 0.15, 0.3);
+        const line = new THREE.Mesh(lineGeo, ARCH_MATS.darkVoid);
+        line.position.copy(monolith.position);
+        line.position.z += gz - monoD / 2 + 20;
+        line.position.y = groundY + 0.08;
+        archGroup.add(line);
+        archObjects.push(line);
+    }
+
+    // --- Perimeter structures (ruins/column stubs) ---
+    const perimSteps = 20;
+    for (let i = 0; i < perimSteps; i++) {
+        const t = sec.start + (i / perimSteps) * (sec.end - sec.start);
+        const frame = getSplineFrame(t);
+
+        for (const side of [-1, 1]) {
+            if (rng() > 0.4) continue; // sparse
+            const dist = 25 + rng() * 15;
+            const stubH = 5 + rng() * 15;
+            const stubW = 2 + rng() * 4;
+            const stubGeo = new THREE.BoxGeometry(stubW, stubH, stubW);
+            const stubMats = [ARCH_MATS.warmConcrete, ARCH_MATS.dustyRose, ARCH_MATS.coolConcrete];
+            const stub = new THREE.Mesh(stubGeo, stubMats[Math.floor(rng() * stubMats.length)]);
+            stub.position.copy(frame.pos);
+            stub.position.addScaledVector(frame.right, side * dist);
+            stub.position.y = groundY + stubH / 2;
+            stub.rotation.y = rng() * Math.PI;
+            addArch(stub);
+        }
+    }
+}
+
+// ============================================================
+// ARCHITECTURE MASTER BUILDER
+// ============================================================
+function buildArchitecture() {
+    initArchMaterials();
+    archGroup = new THREE.Group();
+
+    buildColonnade();
+    buildLabyrinth();
+    buildMonolith();
+
+    scene.add(archGroup);
+}
+
+// ============================================================
+// ARCHITECTURE CULLING (distance-based visibility)
+// ============================================================
+function updateArchCulling() {
+    const camPos = camera.position;
+    const cullDist = 250;
+    const cullDistSq = cullDist * cullDist;
+
+    for (let i = 0; i < archObjects.length; i++) {
+        const obj = archObjects[i];
+        const dx = obj.position.x - camPos.x;
+        const dy = obj.position.y - camPos.y;
+        const dz = obj.position.z - camPos.z;
+        const distSq = dx * dx + dy * dy + dz * dz;
+        obj.visible = distSq < cullDistSq;
+    }
+}
+
+// ============================================================
 // RESIZE HANDLER
 // ============================================================
 function onResize() {
@@ -722,6 +1217,7 @@ function animate() {
         updateShip(dt);
         updateCamera(dt);
         updateSpeedLines(dt);
+        updateArchCulling();
     }
 
     renderer.render(scene, camera);
@@ -739,6 +1235,7 @@ function init() {
     createShip();
     createSpeedLines();
     initLighting();
+    buildArchitecture();
     initInput();
 
     window.addEventListener('resize', onResize);
