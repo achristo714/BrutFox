@@ -8,9 +8,32 @@
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body { overflow: hidden; background: #000; }
 canvas { display: block; }
+#crosshair { position: fixed; pointer-events: none; z-index: 10; }
+#crosshair-ring { width: 24px; height: 24px; border: 1.5px solid rgba(255,255,255,0.6); border-radius: 50%; position: absolute; top: -12px; left: -12px; transition: border-color 0.1s; }
+#crosshair-dot { width: 3px; height: 3px; background: rgba(255,255,255,0.8); border-radius: 50%; position: absolute; top: -1.5px; left: -1.5px; }
+#crosshair.hostile #crosshair-ring { border-color: rgba(230,57,136,0.9); }
+#crosshair.hostile #crosshair-dot { background: rgba(230,57,136,0.9); }
+#score { position: fixed; top: 16px; left: 16px; color: #fff; font-family: 'Courier New', monospace; font-size: 18px; z-index: 10; pointer-events: none; opacity: 0.8; }
+#shard-count { position: fixed; top: 40px; left: 16px; color: #FFBE0B; font-family: 'Courier New', monospace; font-size: 14px; z-index: 10; pointer-events: none; opacity: 0.8; }
+#hp-display { position: fixed; top: 16px; right: 16px; color: #fff; font-family: 'Courier New', monospace; font-size: 18px; z-index: 10; pointer-events: none; opacity: 0.8; }
+#boss-hp-bar { position: fixed; top: 50px; left: 50%; transform: translateX(-50%); width: 300px; height: 8px; background: rgba(0,0,0,0.5); border: 1px solid rgba(255,255,255,0.3); z-index: 10; pointer-events: none; display: none; }
+#boss-hp-fill { width: 100%; height: 100%; background: #E63988; transition: width 0.2s; }
+#game-over { position: fixed; top: 0; left: 0; width: 100%; height: 100%; display: none; z-index: 20; background: rgba(0,0,0,0.6); justify-content: center; align-items: center; flex-direction: column; cursor: pointer; }
+#game-over h1 { color: #E63988; font-family: 'Courier New', monospace; font-size: 48px; letter-spacing: 8px; }
+#game-over p { color: rgba(255,255,255,0.6); font-family: 'Courier New', monospace; font-size: 14px; margin-top: 16px; }
+#damage-flash { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(230,57,136,0.3); pointer-events: none; z-index: 15; opacity: 0; }
+#boss-death-flash { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: #fff; pointer-events: none; z-index: 15; opacity: 0; }
 </style>
 </head>
 <body>
+<div id="crosshair"><div id="crosshair-ring"></div><div id="crosshair-dot"></div></div>
+<div id="score">0</div>
+<div id="shard-count">0 SHARDS</div>
+<div id="hp-display">HP: 3</div>
+<div id="boss-hp-bar"><div id="boss-hp-fill"></div></div>
+<div id="game-over"><h1>GAME OVER</h1><p>CLICK TO RESTART</p></div>
+<div id="damage-flash"></div>
+<div id="boss-death-flash"></div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
 // ============================================================
@@ -102,6 +125,59 @@ let elapsedTime = 0;
 // Speed lines pool
 let speedLines = [];
 const SPEED_LINE_COUNT = 50;
+
+// ============================================================
+// COMBAT STATE
+// ============================================================
+const COMBAT = {
+    FIRE_RATE: 6,             // rounds per second
+    PROJ_SPEED: 80,
+    PROJ_MAX_DIST: 150,
+    PROJ_POOL_SIZE: 50,
+    ENEMY_PROJ_SPEED: 25,
+    ENEMY_PROJ_POOL: 30,
+    ENEMY_PROJ_MAX_DIST: 200,
+    ENEMY_PROJ_MAX_TIME: 8,
+    DRONE_HP: 1,
+    DRONE_HITBOX: 1.2,
+    TURRET_HP: 3,
+    TURRET_HITBOX: 1.8,
+    TURRET_FIRE_INTERVAL: 3,
+    TURRET_CHARGE_TIME: 1,
+    PLAYER_HITBOX: 1.2,
+    PLAYER_HP: 3,
+    INVULN_TIME: 0.5,
+    SHARD_COLLECT_RADIUS: 3,
+    SHARD_POOL_SIZE: 40,
+    FRAGMENT_POOL_SIZE: 80
+};
+
+let playerHP = COMBAT.PLAYER_HP;
+let playerInvulnTimer = 0;
+let playerDamageFlashTimer = 0;
+let cameraShakeTimer = 0;
+let cameraShakeIntensity = 0;
+let fireTimer = 0;
+let isFireHeld = false;
+let score = 0;
+let shardCount = 0;
+let lastSpawnIndex = -1;
+
+// Object pools
+const playerProjectiles = [];
+const enemyProjectiles = [];
+const drones = [];
+const turrets = [];
+const shards = [];
+const fragments = [];
+
+// Raycaster for aiming
+const aimRaycaster = new THREE.Raycaster();
+const aimNDC = new THREE.Vector2();
+const aimPoint = new THREE.Vector3();
+
+// Ship original materials (for damage flash)
+let shipOriginalMats = [];
 
 // Stored reference to main directional light
 let mainDirLight = null;
@@ -1192,6 +1268,711 @@ function onResize() {
 }
 
 // ============================================================
+// COMBAT - OBJECT POOLS
+// ============================================================
+function createProjectilePool() {
+    const geo = new THREE.BoxGeometry(0.15, 0.15, 0.6);
+    const mat = new THREE.MeshBasicMaterial({ color: COLORS.LASER });
+    for (let i = 0; i < COMBAT.PROJ_POOL_SIZE; i++) {
+        const proj = new THREE.Mesh(geo, mat);
+        proj.visible = false;
+        proj.userData = { active: false, velocity: new THREE.Vector3(), traveled: 0 };
+        scene.add(proj);
+        playerProjectiles.push(proj);
+    }
+}
+
+function createEnemyProjectilePool() {
+    const geo = new THREE.SphereGeometry(0.4, 6, 4);
+    const mat = new THREE.MeshBasicMaterial({ color: 0xE63988 });
+    for (let i = 0; i < COMBAT.ENEMY_PROJ_POOL; i++) {
+        const proj = new THREE.Mesh(geo, mat);
+        proj.visible = false;
+        proj.userData = { active: false, velocity: new THREE.Vector3(), traveled: 0, age: 0 };
+        scene.add(proj);
+        enemyProjectiles.push(proj);
+    }
+}
+
+function createDronePool() {
+    const geo = new THREE.OctahedronGeometry(1, 0);
+    const mat = new THREE.MeshPhongMaterial({ color: 0xE63988, emissive: 0xE63988, emissiveIntensity: 0.3, flatShading: true });
+    for (let i = 0; i < 20; i++) {
+        const drone = new THREE.Mesh(geo, mat.clone());
+        drone.visible = false;
+        drone.userData = {
+            active: false, hp: 1, hitbox: COMBAT.DRONE_HITBOX,
+            type: 'drone', basePos: new THREE.Vector3(),
+            phase: Math.random() * Math.PI * 2, flashTimer: 0
+        };
+        scene.add(drone);
+        drones.push(drone);
+    }
+}
+
+function createTurretPool() {
+    for (let i = 0; i < 10; i++) {
+        const group = new THREE.Group();
+        const bodyGeo = new THREE.IcosahedronGeometry(1.5, 0);
+        const bodyMat = new THREE.MeshPhongMaterial({ color: COLORS.DUSTY_BLUE, flatShading: true });
+        const body = new THREE.Mesh(bodyGeo, bodyMat);
+        group.add(body);
+        const eyeGeo = new THREE.SphereGeometry(0.35, 6, 4);
+        const eyeMat = new THREE.MeshBasicMaterial({ color: 0xE63988 });
+        const eye = new THREE.Mesh(eyeGeo, eyeMat);
+        eye.name = 'eye';
+        group.add(eye);
+        group.visible = false;
+        group.userData = {
+            active: false, hp: COMBAT.TURRET_HP, hitbox: COMBAT.TURRET_HITBOX,
+            type: 'turret', fireTimer: 2, charging: false, chargeTimer: 0,
+            flashTimer: 0, baseEmissive: 0.3
+        };
+        scene.add(group);
+        turrets.push(group);
+    }
+}
+
+function createShardPool() {
+    const geo = new THREE.OctahedronGeometry(0.3, 0);
+    const mat = new THREE.MeshBasicMaterial({ color: COLORS.CURRENCY });
+    for (let i = 0; i < COMBAT.SHARD_POOL_SIZE; i++) {
+        const shard = new THREE.Mesh(geo, mat.clone());
+        shard.visible = false;
+        shard.userData = { active: false, age: 0 };
+        scene.add(shard);
+        shards.push(shard);
+    }
+}
+
+function createFragmentPool() {
+    const geo = new THREE.TetrahedronGeometry(0.3, 0);
+    for (let i = 0; i < COMBAT.FRAGMENT_POOL_SIZE; i++) {
+        const frag = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true }));
+        frag.visible = false;
+        frag.userData = { active: false, velocity: new THREE.Vector3(), life: 0, maxLife: 0.5 };
+        scene.add(frag);
+        fragments.push(frag);
+    }
+}
+
+function initCombat() {
+    createProjectilePool();
+    createEnemyProjectilePool();
+    createDronePool();
+    createTurretPool();
+    createShardPool();
+    createFragmentPool();
+
+    // Store ship original materials for damage flash
+    shipGroup.traverse(child => {
+        if (child.isMesh && child.material) {
+            shipOriginalMats.push({ mesh: child, color: child.material.color.getHex() });
+        }
+    });
+
+    // Fire input
+    window.addEventListener('mousedown', (e) => { if (e.button === 0) isFireHeld = true; });
+    window.addEventListener('mouseup', (e) => { if (e.button === 0) isFireHeld = false; });
+
+    // Game over click to restart
+    document.getElementById('game-over').addEventListener('click', () => { location.reload(); });
+}
+
+// ============================================================
+// COMBAT - SPAWN EVENTS
+// ============================================================
+const spawnEvents = [
+    // Section 1: Colonnade - drones only
+    { t: 0.05, type: 'drone', count: 3, formation: 'v', side: 'left' },
+    { t: 0.10, type: 'drone', count: 2, formation: 'line', side: 'right' },
+    { t: 0.15, type: 'drone', count: 4, formation: 'diamond', side: 'center' },
+    { t: 0.20, type: 'drone', count: 3, formation: 'v', side: 'right' },
+    { t: 0.25, type: 'drone', count: 5, formation: 'line', side: 'left' },
+    // Section 2: Labyrinth - drones + turrets
+    { t: 0.40, type: 'drone', count: 3, formation: 'v', side: 'left' },
+    { t: 0.42, type: 'turret', count: 2, wallSide: 'left' },
+    { t: 0.46, type: 'drone', count: 4, formation: 'diamond', side: 'center' },
+    { t: 0.50, type: 'turret', count: 2, wallSide: 'right' },
+    { t: 0.52, type: 'drone', count: 4, formation: 'line', side: 'right' },
+    { t: 0.55, type: 'turret', count: 3, wallSide: 'both' },
+    { t: 0.58, type: 'drone', count: 3, formation: 'v', side: 'center' },
+    { t: 0.62, type: 'drone', count: 3, formation: 'line', side: 'left' },
+    { t: 0.63, type: 'turret', count: 2, wallSide: 'right' },
+    // Section 3: Monolith - heavier
+    { t: 0.74, type: 'drone', count: 4, formation: 'diamond', side: 'center' },
+    { t: 0.76, type: 'turret', count: 3, wallSide: 'both' },
+    { t: 0.78, type: 'drone', count: 5, formation: 'v', side: 'left' },
+    { t: 0.82, type: 'drone', count: 4, formation: 'line', side: 'right' },
+    { t: 0.85, type: 'turret', count: 2, wallSide: 'left' },
+    { t: 0.88, type: 'drone', count: 6, formation: 'diamond', side: 'center' },
+    { t: 0.92, type: 'turret', count: 3, wallSide: 'both' },
+];
+let triggeredSpawns = new Set();
+
+function getFormationOffsets(formation, count) {
+    const offsets = [];
+    const spacing = 3;
+    if (formation === 'v') {
+        for (let i = 0; i < count; i++) {
+            const row = Math.floor(i / 2);
+            const side = i % 2 === 0 ? -1 : 1;
+            if (i === 0) offsets.push({ x: 0, y: 0 });
+            else offsets.push({ x: side * row * spacing, y: -row * spacing * 0.5 });
+        }
+    } else if (formation === 'line') {
+        const half = (count - 1) / 2;
+        for (let i = 0; i < count; i++) offsets.push({ x: (i - half) * spacing, y: 0 });
+    } else if (formation === 'diamond') {
+        offsets.push({ x: 0, y: spacing });
+        offsets.push({ x: -spacing, y: 0 });
+        offsets.push({ x: spacing, y: 0 });
+        offsets.push({ x: 0, y: -spacing });
+        for (let i = 4; i < count; i++) offsets.push({ x: (Math.random() - 0.5) * spacing * 2, y: (Math.random() - 0.5) * spacing * 2 });
+    }
+    return offsets;
+}
+
+function spawnDrone(pos) {
+    for (const d of drones) {
+        if (!d.userData.active) {
+            d.userData.active = true;
+            d.userData.hp = COMBAT.DRONE_HP;
+            d.userData.flashTimer = 0;
+            d.userData.basePos.copy(pos);
+            d.userData.phase = Math.random() * Math.PI * 2;
+            d.position.copy(pos);
+            d.visible = true;
+            d.material.color.setHex(0xE63988);
+            d.material.emissiveIntensity = 0.3;
+            d.scale.set(1, 1, 1);
+            return d;
+        }
+    }
+    return null;
+}
+
+function spawnTurret(pos) {
+    for (const t of turrets) {
+        if (!t.userData.active) {
+            t.userData.active = true;
+            t.userData.hp = COMBAT.TURRET_HP;
+            t.userData.fireTimer = 1.5 + Math.random();
+            t.userData.charging = false;
+            t.userData.chargeTimer = 0;
+            t.userData.flashTimer = 0;
+            t.position.copy(pos);
+            t.visible = true;
+            // Reset body color
+            t.children[0].material.color.setHex(COLORS.DUSTY_BLUE);
+            t.scale.set(1, 1, 1);
+            return t;
+        }
+    }
+    return null;
+}
+
+function processSpawns() {
+    for (let i = 0; i < spawnEvents.length; i++) {
+        if (triggeredSpawns.has(i)) continue;
+        const ev = spawnEvents[i];
+        if (splineProgress >= ev.t) {
+            triggeredSpawns.add(i);
+            const frame = getSplineFrame(Math.min(ev.t + 0.02, 0.999));
+
+            if (ev.type === 'drone') {
+                const offsets = getFormationOffsets(ev.formation, ev.count);
+                let baseOffset = new THREE.Vector3();
+                if (ev.side === 'left') baseOffset.copy(frame.right).multiplyScalar(-15);
+                else if (ev.side === 'right') baseOffset.copy(frame.right).multiplyScalar(15);
+                else baseOffset.copy(frame.tan).multiplyScalar(30);
+                // Position ahead of player
+                const spawnPos = frame.pos.clone().add(baseOffset).addScaledVector(frame.tan, -40);
+
+                for (const off of offsets) {
+                    const pos = spawnPos.clone()
+                        .addScaledVector(frame.right, off.x)
+                        .addScaledVector(frame.up, off.y + 3);
+                    spawnDrone(pos);
+                }
+            } else if (ev.type === 'turret') {
+                const wallDist = 12;
+                for (let j = 0; j < ev.count; j++) {
+                    const tOff = ev.count > 1 ? (j / (ev.count - 1) - 0.5) * 0.02 : 0;
+                    const tFrame = getSplineFrame(Math.min(ev.t + 0.02 + tOff, 0.999));
+                    const sides = ev.wallSide === 'both' ? [-1, 1] : [ev.wallSide === 'left' ? -1 : 1];
+                    for (const s of sides) {
+                        const pos = tFrame.pos.clone()
+                            .addScaledVector(tFrame.right, s * wallDist)
+                            .addScaledVector(tFrame.tan, -30);
+                        pos.y = tFrame.pos.y + 2;
+                        spawnTurret(pos);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ============================================================
+// COMBAT - SHOOTING
+// ============================================================
+function fireProjectile() {
+    for (const p of playerProjectiles) {
+        if (!p.userData.active) {
+            p.userData.active = true;
+            p.userData.traveled = 0;
+            p.visible = true;
+
+            // Fire from ship toward aim point
+            p.position.copy(shipGroup.position);
+
+            // Get aim direction from camera through crosshair
+            aimRaycaster.setFromCamera(aimNDC, camera);
+            const dir = aimRaycaster.ray.direction.clone().normalize();
+            p.userData.velocity.copy(dir).multiplyScalar(COMBAT.PROJ_SPEED);
+
+            // Orient projectile along velocity
+            p.lookAt(p.position.clone().add(dir));
+            return;
+        }
+    }
+}
+
+function fireEnemyProjectile(fromPos, targetPos) {
+    for (const p of enemyProjectiles) {
+        if (!p.userData.active) {
+            p.userData.active = true;
+            p.userData.traveled = 0;
+            p.userData.age = 0;
+            p.visible = true;
+            p.position.copy(fromPos);
+            const dir = new THREE.Vector3().subVectors(targetPos, fromPos).normalize();
+            p.userData.velocity.copy(dir).multiplyScalar(COMBAT.ENEMY_PROJ_SPEED);
+            return;
+        }
+    }
+}
+
+// ============================================================
+// COMBAT - ENEMY UPDATES
+// ============================================================
+function updateDrones(dt) {
+    for (const d of drones) {
+        if (!d.userData.active) continue;
+
+        // Rotate
+        d.rotation.x += dt * 1.0;
+        d.rotation.y += dt * 0.7;
+
+        // Sine-wave drift
+        d.userData.phase += dt;
+        const driftX = Math.sin(d.userData.phase * 1.2) * 3;
+        const driftY = Math.cos(d.userData.phase * 0.8) * 2;
+        d.position.x = d.userData.basePos.x + driftX;
+        d.position.y = d.userData.basePos.y + driftY;
+
+        // Drift slowly toward player along z
+        const toShip = shipGroup.position.z - d.position.z;
+        if (Math.abs(toShip) > 5) {
+            d.position.z += Math.sign(toShip) * dt * 8;
+            d.userData.basePos.z += Math.sign(toShip) * dt * 8;
+        }
+
+        // Flash timer
+        if (d.userData.flashTimer > 0) {
+            d.userData.flashTimer -= dt;
+            d.material.color.setHex(d.userData.flashTimer > 0 ? 0xffffff : 0xE63988);
+        }
+
+        // Despawn if too far behind player
+        if (d.position.distanceTo(shipGroup.position) > 200) {
+            d.userData.active = false;
+            d.visible = false;
+        }
+    }
+}
+
+function updateTurrets(dt) {
+    for (const t of turrets) {
+        if (!t.userData.active) continue;
+
+        // Track player
+        const eye = t.children.find(c => c.name === 'eye');
+        if (eye) {
+            const dir = new THREE.Vector3().subVectors(shipGroup.position, t.position).normalize();
+            eye.position.copy(dir.multiplyScalar(0.6));
+        }
+
+        // Flash timer
+        if (t.userData.flashTimer > 0) {
+            t.userData.flashTimer -= dt;
+            t.children[0].material.color.setHex(t.userData.flashTimer > 0 ? 0xffffff : COLORS.DUSTY_BLUE);
+        }
+
+        // Fire logic
+        t.userData.fireTimer -= dt;
+        if (t.userData.fireTimer <= 0 && !t.userData.charging) {
+            t.userData.charging = true;
+            t.userData.chargeTimer = COMBAT.TURRET_CHARGE_TIME;
+        }
+
+        if (t.userData.charging) {
+            t.userData.chargeTimer -= dt;
+            // Pulse eye during charge
+            if (eye) {
+                const pulse = 1 + Math.sin(t.userData.chargeTimer * 15) * 0.3;
+                eye.scale.set(pulse, pulse, pulse);
+            }
+            if (t.userData.chargeTimer <= 0) {
+                // Fire
+                t.userData.charging = false;
+                t.userData.fireTimer = COMBAT.TURRET_FIRE_INTERVAL;
+                if (eye) eye.scale.set(1, 1, 1);
+                // Only fire if player is somewhat close
+                if (t.position.distanceTo(shipGroup.position) < 100) {
+                    fireEnemyProjectile(t.position, shipGroup.position.clone());
+                }
+            }
+        }
+
+        // Despawn if too far behind
+        if (t.position.distanceTo(shipGroup.position) > 200) {
+            t.userData.active = false;
+            t.visible = false;
+        }
+    }
+}
+
+// ============================================================
+// COMBAT - PROJECTILE UPDATES
+// ============================================================
+function updatePlayerProjectiles(dt) {
+    for (const p of playerProjectiles) {
+        if (!p.userData.active) continue;
+        p.position.addScaledVector(p.userData.velocity, dt);
+        p.userData.traveled += COMBAT.PROJ_SPEED * dt;
+        if (p.userData.traveled > COMBAT.PROJ_MAX_DIST) {
+            p.userData.active = false;
+            p.visible = false;
+        }
+    }
+}
+
+function updateEnemyProjectiles(dt) {
+    for (const p of enemyProjectiles) {
+        if (!p.userData.active) continue;
+        p.position.addScaledVector(p.userData.velocity, dt);
+        p.userData.traveled += COMBAT.ENEMY_PROJ_SPEED * dt;
+        p.userData.age += dt;
+        if (p.userData.traveled > COMBAT.ENEMY_PROJ_MAX_DIST || p.userData.age > COMBAT.ENEMY_PROJ_MAX_TIME) {
+            p.userData.active = false;
+            p.visible = false;
+        }
+    }
+}
+
+// ============================================================
+// COMBAT - COLLISION DETECTION
+// ============================================================
+function spawnFragments(pos, color, count) {
+    let spawned = 0;
+    for (const f of fragments) {
+        if (!f.userData.active && spawned < count) {
+            f.userData.active = true;
+            f.userData.life = 0;
+            f.userData.maxLife = 0.4 + Math.random() * 0.3;
+            f.position.copy(pos);
+            f.material.color.setHex(color);
+            f.material.opacity = 1;
+            f.visible = true;
+            f.scale.set(0.5 + Math.random() * 0.8, 0.5 + Math.random() * 0.8, 0.5 + Math.random() * 0.8);
+            f.userData.velocity.set(
+                (Math.random() - 0.5) * 20,
+                (Math.random() - 0.5) * 20,
+                (Math.random() - 0.5) * 20
+            );
+            spawned++;
+        }
+    }
+}
+
+function spawnDeathFlash(pos, color) {
+    // Use a fragment as a flash sphere
+    for (const f of fragments) {
+        if (!f.userData.active) {
+            f.userData.active = true;
+            f.userData.life = 0;
+            f.userData.maxLife = 0.25;
+            f.position.copy(pos);
+            f.material.color.setHex(color);
+            f.material.opacity = 1;
+            f.visible = true;
+            f.scale.set(3, 3, 3);
+            f.userData.velocity.set(0, 0, 0);
+            return;
+        }
+    }
+}
+
+function spawnShards(pos, count) {
+    let spawned = 0;
+    for (const s of shards) {
+        if (!s.userData.active && spawned < count) {
+            s.userData.active = true;
+            s.userData.age = Math.random() * Math.PI * 2;
+            s.position.copy(pos);
+            s.position.x += (Math.random() - 0.5) * 3;
+            s.position.y += (Math.random() - 0.5) * 2;
+            s.position.z += (Math.random() - 0.5) * 3;
+            s.visible = true;
+            s.material.opacity = 1;
+            spawned++;
+        }
+    }
+}
+
+function enemyDeath(enemy) {
+    const pos = enemy.position ? enemy.position.clone() :
+        (enemy instanceof THREE.Group ? enemy.position.clone() : new THREE.Vector3());
+    const type = enemy.userData.type;
+
+    enemy.userData.active = false;
+    enemy.visible = false;
+
+    if (type === 'drone') {
+        spawnFragments(pos, 0xE63988, 7);
+        spawnDeathFlash(pos, 0xffffff);
+        spawnShards(pos, 1);
+        score += 100;
+    } else if (type === 'turret') {
+        spawnFragments(pos, COLORS.DUSTY_BLUE, 5);
+        spawnDeathFlash(pos, 0x00F0FF);
+        spawnShards(pos, 3);
+        score += 250;
+    }
+
+    document.getElementById('score').textContent = score;
+}
+
+function checkCollisions() {
+    // Player projectiles vs enemies
+    for (const p of playerProjectiles) {
+        if (!p.userData.active) continue;
+
+        for (const d of drones) {
+            if (!d.userData.active) continue;
+            if (p.position.distanceTo(d.position) < COMBAT.DRONE_HITBOX + 0.3) {
+                p.userData.active = false;
+                p.visible = false;
+                d.userData.hp--;
+                d.userData.flashTimer = 0.08;
+                if (d.userData.hp <= 0) enemyDeath(d);
+                break;
+            }
+        }
+        if (!p.userData.active) continue;
+
+        for (const t of turrets) {
+            if (!t.userData.active) continue;
+            if (p.position.distanceTo(t.position) < COMBAT.TURRET_HITBOX + 0.3) {
+                p.userData.active = false;
+                p.visible = false;
+                t.userData.hp--;
+                t.userData.flashTimer = 0.08;
+                if (t.userData.hp <= 0) enemyDeath(t);
+                break;
+            }
+        }
+    }
+
+    // Enemy projectiles vs player
+    const isInvuln = playerInvulnTimer > 0 || barrelRoll.active;
+    for (const p of enemyProjectiles) {
+        if (!p.userData.active) continue;
+        if (p.position.distanceTo(shipGroup.position) < COMBAT.PLAYER_HITBOX + 0.5) {
+            p.userData.active = false;
+            p.visible = false;
+            spawnFragments(p.position, 0xE63988, 3);
+            if (!isInvuln) damagePlayer();
+        }
+    }
+}
+
+// ============================================================
+// COMBAT - PLAYER DAMAGE
+// ============================================================
+function damagePlayer() {
+    if (playerHP <= 0) return;
+    playerHP--;
+    playerInvulnTimer = COMBAT.INVULN_TIME;
+    playerDamageFlashTimer = 0.2;
+    cameraShakeTimer = 0.3;
+    cameraShakeIntensity = 0.5;
+
+    document.getElementById('hp-display').textContent = 'HP: ' + playerHP;
+
+    // Flash screen
+    const flash = document.getElementById('damage-flash');
+    flash.style.opacity = '1';
+    setTimeout(() => { flash.style.opacity = '0'; }, 200);
+
+    // Flash ship red
+    shipGroup.traverse(child => {
+        if (child.isMesh && child.material && child.material.color) {
+            child.material.color.setHex(0xE63988);
+        }
+    });
+
+    if (playerHP <= 0) {
+        gameState = 'GAMEOVER';
+        document.getElementById('game-over').style.display = 'flex';
+    }
+}
+
+function updateDamageEffects(dt) {
+    // Invulnerability timer
+    if (playerInvulnTimer > 0) {
+        playerInvulnTimer -= dt;
+    }
+
+    // Ship flash restore
+    if (playerDamageFlashTimer > 0) {
+        playerDamageFlashTimer -= dt;
+        if (playerDamageFlashTimer <= 0) {
+            // Restore original materials
+            for (const entry of shipOriginalMats) {
+                entry.mesh.material.color.setHex(entry.color);
+            }
+        }
+    }
+
+    // Camera shake
+    if (cameraShakeTimer > 0) {
+        cameraShakeTimer -= dt;
+        const shakeAmt = cameraShakeIntensity * (cameraShakeTimer / 0.3);
+        camera.position.x += (Math.random() - 0.5) * shakeAmt;
+        camera.position.y += (Math.random() - 0.5) * shakeAmt;
+    }
+}
+
+// ============================================================
+// COMBAT - SHARD & FRAGMENT UPDATES
+// ============================================================
+function updateShards(dt) {
+    for (const s of shards) {
+        if (!s.userData.active) continue;
+
+        // Bob animation
+        s.userData.age += dt;
+        s.position.y += Math.sin(s.userData.age * 3) * dt * 0.5;
+        s.rotation.y += dt * 2;
+
+        // Auto-collect
+        if (s.position.distanceTo(shipGroup.position) < COMBAT.SHARD_COLLECT_RADIUS) {
+            s.userData.active = false;
+            s.visible = false;
+            shardCount++;
+            score += 10;
+            document.getElementById('score').textContent = score;
+            document.getElementById('shard-count').textContent = shardCount + ' SHARDS';
+            // Small amber burst
+            spawnFragments(s.position, COLORS.CURRENCY, 4);
+        }
+
+        // Despawn if too far
+        if (s.position.distanceTo(shipGroup.position) > 150) {
+            s.userData.active = false;
+            s.visible = false;
+        }
+    }
+}
+
+function updateFragments(dt) {
+    for (const f of fragments) {
+        if (!f.userData.active) continue;
+        f.userData.life += dt;
+        f.position.addScaledVector(f.userData.velocity, dt);
+        f.userData.velocity.y -= dt * 10; // gravity
+        f.material.opacity = 1 - (f.userData.life / f.userData.maxLife);
+        f.rotation.x += dt * 5;
+        f.rotation.z += dt * 3;
+        if (f.userData.life >= f.userData.maxLife) {
+            f.userData.active = false;
+            f.visible = false;
+        }
+    }
+}
+
+// ============================================================
+// COMBAT - CROSSHAIR & AIMING
+// ============================================================
+function updateCrosshair() {
+    const crosshairEl = document.getElementById('crosshair');
+    const mx = (input.mouseNormX + 1) * 0.5 * window.innerWidth;
+    const my = (1 - (input.mouseNormY + 1) * 0.5) * window.innerHeight;
+    crosshairEl.style.left = mx + 'px';
+    crosshairEl.style.top = my + 'px';
+
+    // Update aim NDC
+    aimNDC.set(input.mouseNormX, input.mouseNormY);
+
+    // Check if aiming at any enemy
+    aimRaycaster.setFromCamera(aimNDC, camera);
+    let hostile = false;
+    for (const d of drones) {
+        if (!d.userData.active) continue;
+        const sphere = new THREE.Sphere(d.position, COMBAT.DRONE_HITBOX);
+        if (aimRaycaster.ray.intersectsSphere(sphere, new THREE.Vector3())) {
+            hostile = true;
+            break;
+        }
+    }
+    if (!hostile) {
+        for (const t of turrets) {
+            if (!t.userData.active) continue;
+            const sphere = new THREE.Sphere(t.position, COMBAT.TURRET_HITBOX);
+            if (aimRaycaster.ray.intersectsSphere(sphere, new THREE.Vector3())) {
+                hostile = true;
+                break;
+            }
+        }
+    }
+    crosshairEl.className = hostile ? 'hostile' : '';
+}
+
+// ============================================================
+// COMBAT - MASTER UPDATE
+// ============================================================
+function updateCombat(dt) {
+    // Fire
+    const shouldFire = isFireHeld || (input.gamepadIndex >= 0 && navigator.getGamepads()[input.gamepadIndex] &&
+        (navigator.getGamepads()[input.gamepadIndex].buttons[7]?.pressed ||
+         navigator.getGamepads()[input.gamepadIndex].buttons[0]?.pressed));
+
+    if (shouldFire) {
+        fireTimer += dt;
+        if (fireTimer >= 1 / COMBAT.FIRE_RATE) {
+            fireTimer = 0;
+            fireProjectile();
+        }
+    } else {
+        fireTimer = 1 / COMBAT.FIRE_RATE; // Ready to fire immediately on next press
+    }
+
+    processSpawns();
+    updateDrones(dt);
+    updateTurrets(dt);
+    updatePlayerProjectiles(dt);
+    updateEnemyProjectiles(dt);
+    checkCollisions();
+    updateDamageEffects(dt);
+    updateShards(dt);
+    updateFragments(dt);
+    updateCrosshair();
+}
+
+// ============================================================
 // DEBUG TOGGLE
 // ============================================================
 window.addEventListener('keydown', (e) => {
@@ -1217,6 +1998,7 @@ function animate() {
         updateShip(dt);
         updateCamera(dt);
         updateSpeedLines(dt);
+        updateCombat(dt);
         updateArchCulling();
     }
 
@@ -1236,6 +2018,7 @@ function init() {
     createSpeedLines();
     initLighting();
     buildArchitecture();
+    initCombat();
     initInput();
 
     window.addEventListener('resize', onResize);
