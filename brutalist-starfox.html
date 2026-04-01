@@ -1,0 +1,757 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BRUTFOX</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { overflow: hidden; background: #000; }
+canvas { display: block; }
+</style>
+</head>
+<body>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+// ============================================================
+// CONSTANTS & CONFIG
+// ============================================================
+const COLORS = {
+    SKY_TOP: 0x1A535C,
+    SKY_HORIZON: 0xFFB4A2,
+    CONCRETE: 0xC4A882,
+    COOL_CONCRETE: 0x8B8D8E,
+    DUSTY_ROSE: 0xC48A7A,
+    TERRACOTTA: 0xB85C3A,
+    CORAL: 0xE07A5F,
+    DUSTY_BLUE: 0x5B8BA0,
+    SAGE: 0x81B29A,
+    SHIP_BODY: 0xE8E0D4,
+    SHIP_WING: 0x3A3A3A,
+    SHIP_ACCENT: 0xE07A5F,
+    LIGHT_WARM: 0xFFD699,
+    LIGHT_AMBIENT: 0x6B5B95,
+    FOG: 0xFFB4A2,
+    LASER: 0xFFD166,
+    CURRENCY: 0xFFBE0B
+};
+
+const FLIGHT = {
+    BASE_SPEED: 30,
+    BOOST_MULTIPLIER: 1.5,
+    BASE_FOV: 65,
+    BOOST_FOV: 72,
+    BOOST_RECHARGE_TIME: 3.0
+};
+
+const CONTROLS = {
+    LERP_FACTOR: 0.08,
+    BANK_ANGLE: Math.PI / 12,
+    ROLL_DURATION: 0.4,
+    ROLL_COOLDOWN: 1.5,
+    DOUBLE_TAP_WINDOW: 0.3,
+    GAMEPAD_DEADZONE: 0.15
+};
+
+const CAM = {
+    BEHIND: 8,
+    ABOVE: 3,
+    LERP: 0.05
+};
+
+const BOUNDS = {
+    MOVE_X: 12,
+    MOVE_Y: 8
+};
+
+// ============================================================
+// GAME STATE
+// ============================================================
+let scene, camera, renderer, clock;
+let splineCurve, splineLength, splineProgress = 0;
+let shipGroup;
+let debugLine = null, debugVisible = false;
+
+const shipOffset = new THREE.Vector2(0, 0);
+const targetOffset = new THREE.Vector2(0, 0);
+
+let currentSpeed = FLIGHT.BASE_SPEED;
+let boostMeter = 1.0;
+let isBoosting = false;
+
+const barrelRoll = {
+    active: false,
+    progress: 0,
+    direction: 0,
+    cooldownTimer: 0
+};
+
+const input = {
+    keys: {},
+    mouseNormX: 0,
+    mouseNormY: 0,
+    gamepadIndex: -1,
+    lastTapA: 0,
+    lastTapD: 0,
+    useGamepad: false
+};
+
+let gameState = 'PLAYING';
+let elapsedTime = 0;
+
+// Speed lines pool
+let speedLines = [];
+const SPEED_LINE_COUNT = 50;
+
+// Stored reference to main directional light
+let mainDirLight = null;
+
+// Temp vectors for calculations
+const _tempVec = new THREE.Vector3();
+const _tempVec2 = new THREE.Vector3();
+const _tempVec3 = new THREE.Vector3();
+const _slVec = new THREE.Vector3(); // dedicated for speed lines
+const _worldUp = new THREE.Vector3(0, 1, 0);
+
+// ============================================================
+// INITIALIZATION
+// ============================================================
+function initRenderer() {
+    renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.BasicShadowMap;
+    document.body.appendChild(renderer.domElement);
+}
+
+function initScene() {
+    scene = new THREE.Scene();
+    scene.fog = new THREE.Fog(COLORS.FOG, 80, 450);
+    camera = new THREE.PerspectiveCamera(FLIGHT.BASE_FOV, window.innerWidth / window.innerHeight, 0.1, 1000);
+    clock = new THREE.Clock();
+}
+
+// ============================================================
+// SKYBOX
+// ============================================================
+function createSkybox() {
+    const skyGeo = new THREE.SphereGeometry(500, 32, 32);
+    const skyMat = new THREE.ShaderMaterial({
+        uniforms: {
+            topColor: { value: new THREE.Color(COLORS.SKY_TOP) },
+            horizonColor: { value: new THREE.Color(COLORS.SKY_HORIZON) }
+        },
+        vertexShader: `
+            varying vec3 vWorldPos;
+            void main() {
+                vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+                vWorldPos = worldPosition.xyz;
+                gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+            }
+        `,
+        fragmentShader: `
+            uniform vec3 topColor;
+            uniform vec3 horizonColor;
+            varying vec3 vWorldPos;
+            void main() {
+                float h = normalize(vWorldPos).y;
+                float t = smoothstep(-0.1, 0.5, h);
+                gl_FragColor = vec4(mix(horizonColor, topColor, t), 1.0);
+            }
+        `,
+        side: THREE.BackSide,
+        depthWrite: false
+    });
+    const sky = new THREE.Mesh(skyGeo, skyMat);
+    scene.add(sky);
+}
+
+// ============================================================
+// GROUND PLANE
+// ============================================================
+function createGround() {
+    const groundGeo = new THREE.PlaneGeometry(2000, 2000);
+    const groundMat = new THREE.MeshLambertMaterial({
+        color: COLORS.CONCRETE,
+        flatShading: true
+    });
+    const ground = new THREE.Mesh(groundGeo, groundMat);
+    ground.rotation.x = -Math.PI / 2;
+    ground.position.y = -18;
+    ground.receiveShadow = true;
+    scene.add(ground);
+}
+
+// ============================================================
+// SPLINE PATH
+// ============================================================
+function createSplinePath() {
+    const points = [
+        // Straight opening run (~3 seconds at 30u/s = ~90 units)
+        new THREE.Vector3(0, 0, 0),
+        new THREE.Vector3(0, 0, -100),
+        new THREE.Vector3(0, 0, -200),
+        new THREE.Vector3(0, 1, -300),
+
+        // Gentle left curve with slight rise
+        new THREE.Vector3(-30, 5, -450),
+        new THREE.Vector3(-70, 10, -600),
+        new THREE.Vector3(-90, 15, -780),
+
+        // Rise upward, continuing left
+        new THREE.Vector3(-80, 35, -950),
+        new THREE.Vector3(-50, 50, -1100),
+        new THREE.Vector3(-10, 45, -1250),
+
+        // Bank right, descend
+        new THREE.Vector3(40, 30, -1400),
+        new THREE.Vector3(80, 15, -1550),
+        new THREE.Vector3(60, 5, -1700),
+
+        // Snake S-curves with elevation
+        new THREE.Vector3(10, 10, -1900),
+        new THREE.Vector3(-50, 20, -2100),
+        new THREE.Vector3(-80, 8, -2300),
+        new THREE.Vector3(-30, 15, -2500),
+
+        // Tighter turns, varied height
+        new THREE.Vector3(50, 30, -2700),
+        new THREE.Vector3(100, 20, -2850),
+        new THREE.Vector3(80, 5, -3050),
+        new THREE.Vector3(20, 15, -3250),
+
+        // Wide spiral opening into distance
+        new THREE.Vector3(-40, 25, -3500),
+        new THREE.Vector3(-100, 35, -3800),
+        new THREE.Vector3(-60, 20, -4100),
+        new THREE.Vector3(0, 10, -4400),
+        new THREE.Vector3(50, 5, -4700),
+        new THREE.Vector3(30, 0, -5000),
+        new THREE.Vector3(0, 0, -5300)
+    ];
+
+    splineCurve = new THREE.CatmullRomCurve3(points, false, 'centripetal');
+    splineLength = splineCurve.getLength();
+
+    // Debug line
+    const linePoints = splineCurve.getPoints(500);
+    const lineGeo = new THREE.BufferGeometry().setFromPoints(linePoints);
+    const lineMat = new THREE.LineBasicMaterial({ color: 0xff0000, transparent: true, opacity: 0.5 });
+    debugLine = new THREE.Line(lineGeo, lineMat);
+    debugLine.visible = debugVisible;
+    scene.add(debugLine);
+}
+
+// ============================================================
+// PLAYER SHIP
+// ============================================================
+function createShip() {
+    shipGroup = new THREE.Group();
+
+    // Body - angular fuselage
+    const bodyVerts = new Float32Array([
+        // Nose
+        0, 0, -2.0,
+        // Top front
+        -0.3, 0.2, -0.8,
+        0.3, 0.2, -0.8,
+        // Bottom front
+        -0.3, -0.15, -0.8,
+        0.3, -0.15, -0.8,
+        // Top rear
+        -0.4, 0.25, 1.0,
+        0.4, 0.25, 1.0,
+        // Bottom rear
+        -0.4, -0.2, 1.0,
+        0.4, -0.2, 1.0
+    ]);
+
+    const bodyIndices = [
+        // Top face
+        0, 1, 2,
+        1, 5, 6, 1, 6, 2,
+        // Bottom face
+        0, 4, 3,
+        3, 4, 8, 3, 8, 7,
+        // Left face
+        0, 3, 1,
+        1, 3, 7, 1, 7, 5,
+        // Right face
+        0, 2, 4,
+        2, 6, 8, 2, 8, 4,
+        // Rear face
+        5, 7, 8, 5, 8, 6
+    ];
+
+    const bodyGeo = new THREE.BufferGeometry();
+    bodyGeo.setAttribute('position', new THREE.BufferAttribute(bodyVerts, 3));
+    bodyGeo.setIndex(bodyIndices);
+    bodyGeo.computeVertexNormals();
+
+    const bodyMat = new THREE.MeshPhongMaterial({
+        color: COLORS.SHIP_BODY,
+        flatShading: true
+    });
+    const body = new THREE.Mesh(bodyGeo, bodyMat);
+    body.castShadow = true;
+    shipGroup.add(body);
+
+    // Wings - swept back
+    const wingGeo = new THREE.BoxGeometry(3.0, 0.06, 1.0);
+    const wingMat = new THREE.MeshPhongMaterial({
+        color: COLORS.SHIP_WING,
+        flatShading: true
+    });
+
+    const leftWing = new THREE.Mesh(wingGeo, wingMat);
+    leftWing.position.set(-1.8, 0, 0.2);
+    leftWing.rotation.z = 0.05;
+    leftWing.rotation.y = 0.15;
+    leftWing.castShadow = true;
+    shipGroup.add(leftWing);
+
+    const rightWing = new THREE.Mesh(wingGeo, wingMat);
+    rightWing.position.set(1.8, 0, 0.2);
+    rightWing.rotation.z = -0.05;
+    rightWing.rotation.y = -0.15;
+    rightWing.castShadow = true;
+    shipGroup.add(rightWing);
+
+    // Fin - vertical stabilizer
+    const finGeo = new THREE.BoxGeometry(0.06, 0.6, 0.7);
+    const finMat = new THREE.MeshPhongMaterial({
+        color: COLORS.SHIP_BODY,
+        flatShading: true
+    });
+    const fin = new THREE.Mesh(finGeo, finMat);
+    fin.position.set(0, 0.45, 0.6);
+    fin.castShadow = true;
+    shipGroup.add(fin);
+
+    // Accent stripe
+    const stripGeo = new THREE.BoxGeometry(0.8, 0.04, 0.15);
+    const stripMat = new THREE.MeshPhongMaterial({
+        color: COLORS.SHIP_ACCENT,
+        flatShading: true
+    });
+    const stripe = new THREE.Mesh(stripGeo, stripMat);
+    stripe.position.set(0, 0.22, -0.3);
+    shipGroup.add(stripe);
+
+    // Engine glow
+    const glowGeo = new THREE.PlaneGeometry(0.5, 0.35);
+    const glowMat = new THREE.MeshBasicMaterial({
+        color: 0xFF8844,
+        transparent: true,
+        opacity: 0.9
+    });
+    const glow = new THREE.Mesh(glowGeo, glowMat);
+    glow.position.set(0, 0, 1.05);
+    shipGroup.add(glow);
+
+    scene.add(shipGroup);
+}
+
+// ============================================================
+// SPEED LINES
+// ============================================================
+function createSpeedLines() {
+    const lineGeo = new THREE.BoxGeometry(0.02, 0.02, 2.0);
+    const lineMat = new THREE.MeshBasicMaterial({
+        color: 0xffffff,
+        transparent: true,
+        opacity: 0.6
+    });
+
+    for (let i = 0; i < SPEED_LINE_COUNT; i++) {
+        const line = new THREE.Mesh(lineGeo, lineMat.clone());
+        line.visible = false;
+        line.userData.velocity = 0;
+        line.userData.life = 0;
+        scene.add(line);
+        speedLines.push(line);
+    }
+}
+
+function resetSpeedLine(line) {
+    // Position around the camera in a ring ahead
+    const angle = Math.random() * Math.PI * 2;
+    const radius = 3 + Math.random() * 8;
+    const forward = -5 - Math.random() * 15;
+
+    // Position relative to camera
+    _slVec.set(
+        Math.cos(angle) * radius,
+        Math.sin(angle) * radius,
+        forward
+    );
+    _slVec.applyQuaternion(camera.quaternion);
+    _slVec.add(camera.position);
+
+    line.position.copy(_slVec);
+    line.quaternion.copy(camera.quaternion);
+    line.userData.velocity = 80 + Math.random() * 60;
+    line.userData.life = 0.3 + Math.random() * 0.5;
+    line.visible = true;
+    line.material.opacity = 0.4 + Math.random() * 0.4;
+}
+
+// ============================================================
+// LIGHTING
+// ============================================================
+function initLighting() {
+    mainDirLight = new THREE.DirectionalLight(COLORS.LIGHT_WARM, 1.2);
+    mainDirLight.position.set(50, 80, -30);
+    mainDirLight.castShadow = true;
+    mainDirLight.shadow.mapSize.width = 1024;
+    mainDirLight.shadow.mapSize.height = 1024;
+    mainDirLight.shadow.camera.near = 0.5;
+    mainDirLight.shadow.camera.far = 200;
+    mainDirLight.shadow.camera.left = -50;
+    mainDirLight.shadow.camera.right = 50;
+    mainDirLight.shadow.camera.top = 50;
+    mainDirLight.shadow.camera.bottom = -50;
+    scene.add(mainDirLight);
+    scene.add(mainDirLight.target);
+
+    const ambLight = new THREE.AmbientLight(COLORS.LIGHT_AMBIENT, 0.3);
+    scene.add(ambLight);
+}
+
+// ============================================================
+// INPUT HANDLING
+// ============================================================
+function initInput() {
+    window.addEventListener('mousemove', (e) => {
+        input.mouseNormX = (e.clientX / window.innerWidth) * 2 - 1;
+        input.mouseNormY = -((e.clientY / window.innerHeight) * 2 - 1);
+    });
+
+    window.addEventListener('keydown', (e) => {
+        if (input.keys[e.code]) return; // Ignore repeats
+        input.keys[e.code] = true;
+
+        const now = clock.elapsedTime;
+
+        // Double-tap detection for barrel roll
+        if (e.code === 'KeyA') {
+            if (now - input.lastTapA < CONTROLS.DOUBLE_TAP_WINDOW) {
+                triggerBarrelRoll(-1);
+            }
+            input.lastTapA = now;
+        }
+        if (e.code === 'KeyD') {
+            if (now - input.lastTapD < CONTROLS.DOUBLE_TAP_WINDOW) {
+                triggerBarrelRoll(1);
+            }
+            input.lastTapD = now;
+        }
+    });
+
+    window.addEventListener('keyup', (e) => {
+        input.keys[e.code] = false;
+    });
+
+    window.addEventListener('gamepadconnected', (e) => {
+        input.gamepadIndex = e.gamepad.index;
+    });
+
+    window.addEventListener('gamepaddisconnected', () => {
+        input.gamepadIndex = -1;
+        input.useGamepad = false;
+    });
+}
+
+function triggerBarrelRoll(direction) {
+    if (barrelRoll.active || barrelRoll.cooldownTimer > 0) return;
+    barrelRoll.active = true;
+    barrelRoll.progress = 0;
+    barrelRoll.direction = direction;
+}
+
+let prevGamepadLeftX = 0;
+let prevGamepadLeftTime = 0;
+
+function processInput(dt) {
+    // Keyboard boost
+    isBoosting = !!input.keys['ShiftLeft'] || !!input.keys['ShiftRight'];
+
+    // Mouse -> target offset
+    if (!input.useGamepad) {
+        targetOffset.x = input.mouseNormX * BOUNDS.MOVE_X;
+        targetOffset.y = input.mouseNormY * BOUNDS.MOVE_Y;
+    }
+
+    // Gamepad
+    if (input.gamepadIndex >= 0) {
+        const gp = navigator.getGamepads()[input.gamepadIndex];
+        if (gp) {
+            const lx = gp.axes[0];
+            const ly = gp.axes[1];
+            const magnitude = Math.sqrt(lx * lx + ly * ly);
+
+            if (magnitude > CONTROLS.GAMEPAD_DEADZONE) {
+                input.useGamepad = true;
+                targetOffset.x = lx * BOUNDS.MOVE_X;
+                targetOffset.y = -ly * BOUNDS.MOVE_Y;
+
+                // Double-tap detection on stick
+                const now = clock.elapsedTime;
+                if (lx < -0.7 && prevGamepadLeftX > -0.3) {
+                    if (now - prevGamepadLeftTime < CONTROLS.DOUBLE_TAP_WINDOW) {
+                        triggerBarrelRoll(-1);
+                    }
+                    prevGamepadLeftTime = now;
+                } else if (lx > 0.7 && prevGamepadLeftX < 0.3) {
+                    if (now - prevGamepadLeftTime < CONTROLS.DOUBLE_TAP_WINDOW) {
+                        triggerBarrelRoll(1);
+                    }
+                    prevGamepadLeftTime = now;
+                }
+                prevGamepadLeftX = lx;
+            } else if (input.useGamepad && magnitude < CONTROLS.GAMEPAD_DEADZONE * 0.5) {
+                // Return to center when stick released
+                targetOffset.x = 0;
+                targetOffset.y = 0;
+            }
+
+            // Bumpers for barrel roll
+            if (gp.buttons[4] && gp.buttons[4].pressed) triggerBarrelRoll(-1);
+            if (gp.buttons[5] && gp.buttons[5].pressed) triggerBarrelRoll(1);
+
+            // Left trigger for boost
+            const triggerValue = gp.buttons[6] ? gp.buttons[6].value : 0;
+            if (triggerValue > 0.3) isBoosting = true;
+        }
+    }
+
+    // Clamp target offset
+    targetOffset.x = THREE.MathUtils.clamp(targetOffset.x, -BOUNDS.MOVE_X, BOUNDS.MOVE_X);
+    targetOffset.y = THREE.MathUtils.clamp(targetOffset.y, -BOUNDS.MOVE_Y, BOUNDS.MOVE_Y);
+}
+
+// ============================================================
+// SHIP UPDATE
+// ============================================================
+function updateShip(dt) {
+    // Boost logic
+    if (isBoosting && boostMeter > 0) {
+        currentSpeed = FLIGHT.BASE_SPEED * FLIGHT.BOOST_MULTIPLIER;
+        boostMeter -= dt / FLIGHT.BOOST_RECHARGE_TIME;
+        if (boostMeter < 0) boostMeter = 0;
+    } else {
+        currentSpeed = FLIGHT.BASE_SPEED;
+        if (!isBoosting && boostMeter < 1) {
+            boostMeter += dt / FLIGHT.BOOST_RECHARGE_TIME;
+            if (boostMeter > 1) boostMeter = 1;
+        }
+    }
+
+    // Advance along spline
+    splineProgress += (currentSpeed * dt) / splineLength;
+    if (splineProgress >= 1.0) {
+        splineProgress = 0; // Loop for now
+    }
+
+    // Get spline position and tangent
+    const splinePoint = splineCurve.getPointAt(splineProgress);
+    const tangent = splineCurve.getTangentAt(splineProgress);
+
+    // Compute local coordinate frame
+    const right = _tempVec.crossVectors(tangent, _worldUp).normalize();
+    const up = _tempVec2.crossVectors(right, tangent).normalize();
+
+    // Lerp ship offset toward target
+    shipOffset.x += (targetOffset.x - shipOffset.x) * CONTROLS.LERP_FACTOR;
+    shipOffset.y += (targetOffset.y - shipOffset.y) * CONTROLS.LERP_FACTOR;
+
+    // Idle hover
+    const hoverOffset = Math.sin(elapsedTime * 1.5) * 0.3;
+
+    // Position ship
+    shipGroup.position.copy(splinePoint);
+    shipGroup.position.addScaledVector(right, shipOffset.x);
+    shipGroup.position.addScaledVector(up, shipOffset.y + hoverOffset);
+
+    // Orientation - look along tangent
+    const lookTarget = _tempVec3.copy(shipGroup.position).addScaledVector(tangent, 10);
+    shipGroup.lookAt(lookTarget);
+
+    // Visual banking based on lateral offset velocity
+    const lateralDelta = targetOffset.x - shipOffset.x;
+    const bankAngle = THREE.MathUtils.clamp(
+        lateralDelta * 0.3,
+        -CONTROLS.BANK_ANGLE,
+        CONTROLS.BANK_ANGLE
+    );
+    shipGroup.rotation.z += bankAngle;
+
+    // Pitch down when boosting
+    if (isBoosting && boostMeter > 0) {
+        shipGroup.rotation.x += 0.08;
+    }
+
+    // Barrel roll - apply full rotation based on progress fraction
+    if (barrelRoll.active) {
+        barrelRoll.progress += dt;
+        const t = Math.min(barrelRoll.progress / CONTROLS.ROLL_DURATION, 1.0);
+        // Eased roll using smoothstep-like curve
+        const eased = t * t * (3 - 2 * t);
+        shipGroup.rotation.z += eased * Math.PI * 2 * barrelRoll.direction;
+
+        if (barrelRoll.progress >= CONTROLS.ROLL_DURATION) {
+            barrelRoll.active = false;
+            barrelRoll.cooldownTimer = CONTROLS.ROLL_COOLDOWN;
+        }
+    }
+
+    // Barrel roll cooldown
+    if (barrelRoll.cooldownTimer > 0) {
+        barrelRoll.cooldownTimer -= dt;
+    }
+
+    // Update directional light to follow ship
+    if (mainDirLight) {
+        mainDirLight.position.copy(shipGroup.position);
+        mainDirLight.position.x += 50;
+        mainDirLight.position.y += 80;
+        mainDirLight.position.z += -30;
+        mainDirLight.target.position.copy(shipGroup.position);
+    }
+}
+
+// ============================================================
+// CAMERA UPDATE
+// ============================================================
+function updateCamera(dt) {
+    // Camera follows a point slightly behind on the spline
+    const camT = Math.max(0, splineProgress - (CAM.BEHIND / splineLength));
+    const camSplinePoint = splineCurve.getPointAt(camT);
+    const camTangent = splineCurve.getTangentAt(camT);
+
+    // Compute camera up from spline frame
+    const camRight = _tempVec.crossVectors(camTangent, _worldUp).normalize();
+    const camUp = _tempVec2.crossVectors(camRight, camTangent).normalize();
+
+    // Ideal camera position
+    const idealPos = _tempVec3.copy(camSplinePoint);
+    idealPos.addScaledVector(camUp, CAM.ABOVE);
+    // Offset camera slightly with ship offset (dampened)
+    idealPos.addScaledVector(camRight, shipOffset.x * 0.3);
+    idealPos.addScaledVector(camUp, shipOffset.y * 0.2);
+
+    // Lerp camera toward ideal
+    camera.position.lerp(idealPos, CAM.LERP);
+
+    // Look at ship (or slightly ahead of it)
+    const lookAt = shipGroup.position.clone().addScaledVector(camTangent, 5);
+    camera.lookAt(lookAt);
+
+    // Lerp FOV
+    const targetFOV = (isBoosting && boostMeter > 0) ? FLIGHT.BOOST_FOV : FLIGHT.BASE_FOV;
+    camera.fov += (targetFOV - camera.fov) * 0.05;
+    camera.updateProjectionMatrix();
+}
+
+// ============================================================
+// SPEED LINES UPDATE
+// ============================================================
+function updateSpeedLines(dt) {
+    const shouldShow = isBoosting && boostMeter > 0;
+
+    for (let i = 0; i < speedLines.length; i++) {
+        const line = speedLines[i];
+
+        if (shouldShow) {
+            if (!line.visible || line.userData.life <= 0) {
+                resetSpeedLine(line);
+            }
+
+            // Move line backward along camera forward
+            const backward = _slVec.set(0, 0, 1).applyQuaternion(camera.quaternion);
+            line.position.addScaledVector(backward, line.userData.velocity * dt);
+            line.userData.life -= dt;
+
+            if (line.userData.life <= 0) {
+                resetSpeedLine(line);
+            }
+        } else {
+            if (line.visible) {
+                line.material.opacity -= dt * 3;
+                if (line.material.opacity <= 0) {
+                    line.visible = false;
+                }
+            }
+        }
+    }
+}
+
+// ============================================================
+// RESIZE HANDLER
+// ============================================================
+function onResize() {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+}
+
+// ============================================================
+// DEBUG TOGGLE
+// ============================================================
+window.addEventListener('keydown', (e) => {
+    if (e.code === 'KeyL' && debugLine) {
+        debugVisible = !debugVisible;
+        debugLine.visible = debugVisible;
+    }
+});
+
+// ============================================================
+// GAME LOOP
+// ============================================================
+function animate() {
+    requestAnimationFrame(animate);
+
+    let dt = clock.getDelta();
+    if (dt > 0.05) dt = 0.05; // Clamp to prevent spiral
+
+    elapsedTime += dt;
+
+    if (gameState === 'PLAYING') {
+        processInput(dt);
+        updateShip(dt);
+        updateCamera(dt);
+        updateSpeedLines(dt);
+    }
+
+    renderer.render(scene, camera);
+}
+
+// ============================================================
+// INIT & START
+// ============================================================
+function init() {
+    initRenderer();
+    initScene();
+    createSkybox();
+    createGround();
+    createSplinePath();
+    createShip();
+    createSpeedLines();
+    initLighting();
+    initInput();
+
+    window.addEventListener('resize', onResize);
+
+    // Position camera initially
+    const startPoint = splineCurve.getPointAt(0);
+    camera.position.copy(startPoint).add(new THREE.Vector3(0, CAM.ABOVE, CAM.BEHIND));
+    camera.lookAt(startPoint);
+
+    animate();
+}
+
+init();
+</script>
+</body>
+</html>
