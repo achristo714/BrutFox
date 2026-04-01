@@ -158,7 +158,7 @@ const FLIGHT = {
 };
 
 const CONTROLS = {
-    LERP_FACTOR: 0.35,
+    LERP_FACTOR: 0.12,
     BANK_ANGLE: Math.PI / 10,
     ROLL_DURATION: 0.4,
     ROLL_COOLDOWN: 1.5,
@@ -924,7 +924,7 @@ function updateShip(dt) {
     // Hold Q/E to tilt vertically for tight squeezes
     if (input.keys['KeyQ']) targetBankAngle = -Math.PI / 4;
     if (input.keys['KeyE']) targetBankAngle = Math.PI / 4;
-    smoothBankAngle += (targetBankAngle - smoothBankAngle) * 0.1;
+    smoothBankAngle += (targetBankAngle - smoothBankAngle) * 0.07;
 
     // Smooth boost pitch
     const targetBoostPitch = (isBoosting && boostMeter > 0) ? 0.08 : 0;
@@ -999,14 +999,14 @@ function updateCamera(dt) {
     const camRight = _tempVec.crossVectors(camTangent, _worldUp).normalize();
     const camUp = _tempVec2.crossVectors(camRight, camTangent).normalize();
 
-    // Ideal camera position - follows ship offset closely
+    // Ideal camera position - follows ship smoothly
     const idealPos = _tempVec3.copy(camSplinePoint);
     idealPos.addScaledVector(camUp, CAM.ABOVE);
-    idealPos.addScaledVector(camRight, shipOffset.x * 0.7);
-    idealPos.addScaledVector(camUp, shipOffset.y * 0.5);
+    idealPos.addScaledVector(camRight, shipOffset.x * 0.45);
+    idealPos.addScaledVector(camUp, shipOffset.y * 0.35);
 
-    // Lerp camera toward ideal
-    camera.position.lerp(idealPos, 0.08);
+    // Lerp camera toward ideal (steady, not jerky)
+    camera.position.lerp(idealPos, 0.04);
 
     // Look at ship (or slightly ahead of it)
     const lookAt = shipGroup.position.clone().addScaledVector(camTangent, 5);
@@ -1803,6 +1803,8 @@ function initCombat() {
     createMiniboss();
     createCoins();
     createAllyShips();
+    initGrazeSparks();
+    createCollapseWall();
 
     // Store ship original materials for damage flash
     shipGroup.traverse(child => {
@@ -2085,6 +2087,7 @@ function activateMiniboss() {
     document.getElementById('boss-hp-bar').style.display = 'block';
     updateBossHPBar();
     triggerChatter('boss');
+    activateCollapse();
 }
 
 function updateBossHPBar() {
@@ -2337,16 +2340,16 @@ function enemyDeath(enemy) {
         spawnFragments(pos, 0xE63988, 7);
         spawnDeathFlash(pos, 0xffffff);
         spawnShards(pos, 1);
-        score += 100;
+        score += getGrazedScore(100);
     } else if (type === 'turret') {
-        spawnFragments(pos, COLORS.DUSTY_BLUE, 5);
-        spawnDeathFlash(pos, 0x00F0FF);
+        spawnFragments(pos, 0xCC3366, 5);
+        spawnDeathFlash(pos, 0xffffff);
         spawnShards(pos, 3);
-        score += 250;
+        score += getGrazedScore(250);
     } else if (type === 'flyer') {
-        spawnFragments(pos, 0x00F0FF, 3);
+        spawnFragments(pos, 0xFF4477, 3);
         spawnShards(pos, 1);
-        score += 150;
+        score += getGrazedScore(150);
     }
 
     triggerModifierOnKill(enemy, pos);
@@ -2470,6 +2473,8 @@ function damagePlayer() {
     playerHP--;
     playerInvulnTimer = COMBAT.INVULN_TIME;
     Audio.playerHit();
+    resetGrazeOnHit();
+    collapsSurge();
     if (Math.random() > 0.5) triggerChatter('damage');
     playerDamageFlashTimer = 0.2;
     cameraShakeTimer = 0.3;
@@ -4102,8 +4107,13 @@ function restartGame() {
     splineProgress = 0; elapsedTime = 0; boostMeter = 1; lastSectionShown = -1;
     crashTimer = 0; shipGroup.visible = true; chatterTriggered = {};
     lastUpgradeMilestone = 0; lastShieldMilestone = 0;
-    // Reset coins
+    grazeMultiplier = 1.0; grazeTimer = 0; grazeHoldTimer = 0;
+    collapseActive = false; deconstructing = false;
+    if (collapseWall) { collapseWall.visible = false; collapseWall.material.opacity = 0; }
+    for (const p of collapseParticles) p.visible = false;
+    // Reset coins and architecture
     for (const c of coins) { c.userData.active = true; c.visible = true; }
+    initArchAssembly();
     cardPickNumber = 0; levelEnding = false; levelEndTimer = 0; bossDefeated = false;
     bossState.active = false; bossState.dying = false;
     if (boss) boss.visible = false;
@@ -4141,6 +4151,336 @@ function restartGame() {
     updateHUD();
 
     gameState = 'PLAYING';
+}
+
+// ============================================================
+// GRAZE SYSTEM
+// ============================================================
+let grazeMultiplier = 1.0;
+let grazeTimer = 0;
+let grazeHoldTimer = 0;
+let grazeDecayTimer = 0;
+let isGrazing = false;
+const GRAZE_MIN = 2, GRAZE_MAX = 5, GRAZE_ENEMY_DIST = 3;
+const grazeSparks = [];
+
+function initGrazeSparks() {
+    const geo = new THREE.BoxGeometry(0.08, 0.08, 0.2);
+    for (let i = 0; i < 20; i++) {
+        const s = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0xFFD166, transparent: true }));
+        s.visible = false;
+        s.userData = { active: false, vel: new THREE.Vector3(), life: 0 };
+        scene.add(s);
+        grazeSparks.push(s);
+    }
+}
+
+function updateGraze(dt) {
+    let nearestDist = 999;
+    const shipPos = shipGroup.position;
+
+    // Check architecture proximity
+    for (let i = 0; i < archObjects.length; i++) {
+        const obj = archObjects[i];
+        if (!obj.visible || !obj.geometry || !obj.geometry.parameters) continue;
+        const dx = shipPos.x - obj.position.x;
+        const dy = shipPos.y - obj.position.y;
+        const dz = shipPos.z - obj.position.z;
+        const dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
+        if (dist < 30) {
+            const p = obj.geometry.parameters;
+            const hw = (p.width||2)/2, hh = (p.height||2)/2, hd = (p.depth||2)/2;
+            // Approximate surface distance
+            const cx = Math.max(0, Math.abs(dx) - hw);
+            const cy = Math.max(0, Math.abs(dy) - hh);
+            const cz = Math.max(0, Math.abs(dz) - hd);
+            const surfDist = Math.sqrt(cx*cx + cy*cy + cz*cz);
+            if (surfDist < nearestDist) nearestDist = surfDist;
+        }
+    }
+
+    // Check enemy proximity
+    const allEn = [...drones, ...turrets, ...formationFlyers];
+    for (const e of allEn) {
+        if (!e.userData.active) continue;
+        const d = shipPos.distanceTo(e.position) - (e.userData.hitbox || 1);
+        if (d < nearestDist) nearestDist = d;
+    }
+
+    const wasGrazing = isGrazing;
+    isGrazing = nearestDist > GRAZE_MIN && nearestDist < GRAZE_MAX;
+
+    if (isGrazing) {
+        grazeHoldTimer = 1.5;
+        const buildRate = (isBoosting && boostMeter > 0) ? 0.4 : 0.2;
+        grazeTimer += dt;
+        if (grazeTimer >= 0.5) {
+            grazeTimer -= 0.5;
+            grazeMultiplier = Math.min(3.0, grazeMultiplier + 0.1);
+        }
+        // Sparks
+        if (Math.random() > 0.5) {
+            for (const s of grazeSparks) {
+                if (!s.userData.active) {
+                    s.userData.active = true; s.userData.life = 0;
+                    s.position.copy(shipPos);
+                    s.position.x += (Math.random()-0.5)*2;
+                    s.position.y += (Math.random()-0.5)*1;
+                    s.userData.vel.set((Math.random()-0.5)*15, Math.random()*8, (Math.random()-0.5)*15);
+                    s.visible = true; s.material.opacity = 1;
+                    s.material.color.setHex(nearestDist < GRAZE_ENEMY_DIST ? 0xE63988 : 0xFFD166);
+                    break;
+                }
+            }
+        }
+    } else {
+        grazeHoldTimer -= dt;
+        if (grazeHoldTimer <= 0) {
+            grazeMultiplier = Math.max(1.0, grazeMultiplier - dt * 0.5);
+        }
+    }
+
+    // Update sparks
+    for (const s of grazeSparks) {
+        if (!s.userData.active) continue;
+        s.userData.life += dt;
+        s.position.addScaledVector(s.userData.vel, dt);
+        s.material.opacity = Math.max(0, 1 - s.userData.life / 0.15);
+        if (s.userData.life > 0.15) { s.userData.active = false; s.visible = false; }
+    }
+
+    // Update HUD multiplier
+    updateGrazeHUD();
+}
+
+function resetGrazeOnHit() {
+    grazeMultiplier = 1.0;
+    grazeTimer = 0;
+    grazeHoldTimer = 0;
+}
+
+function getGrazedScore(base) {
+    return Math.round(base * grazeMultiplier);
+}
+
+function updateGrazeHUD() {
+    let el = document.getElementById('graze-display');
+    if (!el) {
+        el = document.createElement('div');
+        el.id = 'graze-display';
+        el.style.cssText = 'position:absolute;top:16px;left:180px;font-size:16px;pointer-events:none;transition:color 0.3s;';
+        document.getElementById('hud').appendChild(el);
+    }
+    if (grazeMultiplier > 1.05) {
+        el.textContent = grazeMultiplier.toFixed(1) + 'x';
+        if (grazeMultiplier >= 2.0) el.style.color = '#FFD166';
+        else if (grazeMultiplier >= 1.5) el.style.color = '#FFBE0B';
+        else el.style.color = '#fff';
+        el.style.opacity = '1';
+    } else {
+        el.style.opacity = '0';
+    }
+}
+
+// ============================================================
+// SELF-ASSEMBLING ARCHITECTURE
+// ============================================================
+const assemblingPieces = [];
+let deconstructing = false;
+let deconstructTimer = 0;
+
+function initArchAssembly() {
+    // Set all arch objects to start in a "floating" state
+    for (const obj of archObjects) {
+        obj.userData.assembled = false;
+        obj.userData.assembleTimer = 0;
+        obj.userData.assembleDuration = 2 + Math.random() * 2;
+        obj.userData.finalY = obj.position.y;
+        obj.userData.finalRotX = obj.rotation.x;
+        obj.userData.finalRotZ = obj.rotation.z;
+        // Offset up or to sides based on section
+        const yOff = 30 + Math.random() * 50;
+        obj.userData.startY = obj.userData.finalY + yOff;
+        obj.userData.startRotX = (Math.random() - 0.5) * 0.3;
+        obj.userData.startRotZ = (Math.random() - 0.5) * 0.3;
+        // Start at offset position, invisible
+        obj.position.y = obj.userData.startY;
+        obj.rotation.x = obj.userData.startRotX;
+        obj.rotation.z = obj.userData.startRotZ;
+        if (obj.material) {
+            obj.material.transparent = true;
+            obj.material.opacity = 0;
+        }
+        obj.visible = false;
+    }
+}
+
+function updateArchAssembly(dt) {
+    const shipT = splineProgress;
+    let activeCount = 0;
+
+    for (const obj of archObjects) {
+        if (obj.userData.assembled) continue;
+
+        // Check if piece should start assembling (within 150 units ahead)
+        const dx = obj.userData.finalY !== undefined ? obj.position.x - camera.position.x : 999;
+        const dz = obj.position.z - camera.position.z;
+        const distAhead = Math.sqrt(dx*dx + dz*dz);
+
+        if (distAhead < 180 && distAhead > -20) {
+            if (!obj.visible) {
+                obj.visible = true;
+                if (obj.material) obj.material.opacity = 0;
+            }
+
+            if (activeCount < 40) {
+                activeCount++;
+                obj.userData.assembleTimer += dt;
+                const t = Math.min(obj.userData.assembleTimer / obj.userData.assembleDuration, 1);
+                // Ease-out curve
+                const eased = 1 - Math.pow(1 - t, 3);
+
+                obj.position.y = obj.userData.startY + (obj.userData.finalY - obj.userData.startY) * eased;
+                obj.rotation.x = obj.userData.startRotX + (obj.userData.finalRotX - obj.userData.startRotX) * eased;
+                obj.rotation.z = obj.userData.startRotZ + (obj.userData.finalRotZ - obj.userData.startRotZ) * eased;
+                if (obj.material) obj.material.opacity = Math.min(1, eased * 1.5);
+
+                if (t >= 1) {
+                    obj.userData.assembled = true;
+                    if (obj.material) { obj.material.opacity = 1; obj.material.transparent = false; }
+                }
+            }
+        }
+    }
+
+    // Post-boss deconstruction
+    if (deconstructing) {
+        deconstructTimer += dt;
+        for (const obj of archObjects) {
+            if (!obj.visible) continue;
+            const d = obj.position.distanceTo(camera.position);
+            if (d < 100 + deconstructTimer * 30) {
+                if (obj.material && !obj.userData.deconstructing) {
+                    obj.userData.deconstructing = true;
+                    obj.material.transparent = true;
+                }
+                if (obj.userData.deconstructing && obj.material) {
+                    obj.material.opacity -= dt * 0.5;
+                    obj.position.y += dt * (5 + Math.random() * 3);
+                    obj.rotation.x += dt * 0.3;
+                    if (obj.material.opacity <= 0) obj.visible = false;
+                }
+            }
+        }
+    }
+}
+
+function startDeconstruction() {
+    deconstructing = true;
+    deconstructTimer = 0;
+}
+
+// ============================================================
+// THE COLLAPSE (chases player after boss spawns)
+// ============================================================
+let collapseActive = false;
+let collapseT = 0; // spline progress of the collapse wall
+let collapseWall = null;
+const collapseParticles = [];
+
+function createCollapseWall() {
+    const geo = new THREE.PlaneGeometry(120, 80);
+    const mat = new THREE.MeshBasicMaterial({ color: 0x1A1A1A, transparent: true, opacity: 0, side: THREE.DoubleSide });
+    collapseWall = new THREE.Mesh(geo, mat);
+    collapseWall.visible = false;
+    scene.add(collapseWall);
+
+    // Dark particles
+    const pGeo = new THREE.BoxGeometry(0.5, 0.5, 0.5);
+    for (let i = 0; i < 40; i++) {
+        const p = new THREE.Mesh(pGeo, new THREE.MeshBasicMaterial({ color: 0x111111, transparent: true, opacity: 0 }));
+        p.visible = false;
+        p.userData = { offset: new THREE.Vector3((Math.random()-0.5)*60, (Math.random()-0.5)*40, (Math.random()-0.5)*10) };
+        scene.add(p);
+        collapseParticles.push(p);
+    }
+}
+
+function activateCollapse() {
+    collapseActive = true;
+    collapseT = Math.max(0, splineProgress - 0.005);
+    collapseWall.visible = true;
+}
+
+function updateCollapse(dt) {
+    if (!collapseActive) return;
+
+    // Advance collapse
+    const collapseSpeed = FLIGHT.BASE_SPEED * 0.7;
+    collapseT += (collapseSpeed * dt) / splineLength;
+    collapseT = Math.min(collapseT, 0.999);
+
+    // Position wall
+    const wallPos = splineCurve.getPointAt(collapseT);
+    const wallTan = splineCurve.getTangentAt(collapseT);
+    collapseWall.position.copy(wallPos);
+    collapseWall.lookAt(wallPos.clone().add(wallTan));
+
+    // Distance to player
+    const playerDist = (splineProgress - collapseT) * splineLength;
+
+    // Opacity and intensity based on distance
+    const intensity = Math.max(0, 1 - playerDist / 40);
+    collapseWall.material.opacity = Math.min(0.8, intensity * 1.2);
+
+    // Particles
+    for (const p of collapseParticles) {
+        p.visible = intensity > 0.1;
+        if (p.visible) {
+            p.position.copy(wallPos).add(p.userData.offset);
+            p.position.y += Math.sin(elapsedTime * 2 + p.userData.offset.x) * 2;
+            p.material.opacity = intensity * 0.6;
+            p.rotation.x += dt * 2;
+            p.rotation.z += dt;
+        }
+    }
+
+    // Danger effects
+    if (playerDist < 15) {
+        cameraShakeTimer = Math.max(cameraShakeTimer, 0.05);
+        cameraShakeIntensity = Math.max(cameraShakeIntensity, (1 - playerDist/15) * 0.3);
+    }
+
+    // Graze interaction - near collapse counts as grazing
+    if (playerDist < 20 && playerDist > 5) {
+        isGrazing = true;
+        grazeHoldTimer = 1.5;
+    }
+
+    // Kill if collapse reaches player
+    if (playerDist <= 0 && gameState === 'PLAYING') {
+        playerHP = 0;
+        gameState = 'CRASHING';
+        crashTimer = 0;
+        crashVelocity = new THREE.Vector3(0, -5, 0);
+        crashRotVel = new THREE.Vector3(2, 1, 3);
+    }
+
+    // Boss death stops collapse
+    if (bossDefeated) {
+        collapseWall.material.opacity -= dt * 0.3;
+        for (const p of collapseParticles) { if (p.material) p.material.opacity -= dt * 0.3; }
+        if (collapseWall.material.opacity <= 0) {
+            collapseActive = false;
+            collapseWall.visible = false;
+            for (const p of collapseParticles) p.visible = false;
+            startDeconstruction();
+        }
+    }
+}
+
+function collapsSurge() {
+    if (collapseActive) collapseT += 0.003; // Surge forward on player hit
 }
 
 // ============================================================
@@ -4454,6 +4794,9 @@ function animate() {
         updateCamera(dt);
         updateSpeedLines(dt);
         updateCombat(dt);
+        updateGraze(dt);
+        updateArchAssembly(dt);
+        updateCollapse(dt);
         updateArchCulling();
         checkArchCollision();
         updateEngineTrails(dt);
@@ -4532,6 +4875,7 @@ function init() {
     createSpeedLines();
     initLighting();
     buildArchitecture();
+    initArchAssembly();
     initCombat();
     initCardSystem();
     initInput();
