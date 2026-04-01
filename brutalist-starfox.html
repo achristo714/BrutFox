@@ -23,6 +23,17 @@ canvas { display: block; }
 #game-over p { color: rgba(255,255,255,0.6); font-family: 'Courier New', monospace; font-size: 14px; margin-top: 16px; }
 #damage-flash { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(230,57,136,0.3); pointer-events: none; z-index: 15; opacity: 0; }
 #boss-death-flash { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: #fff; pointer-events: none; z-index: 15; opacity: 0; }
+#card-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; display: none; z-index: 25; justify-content: center; align-items: center; gap: 24px; }
+.card { width: 200px; height: 280px; background: #2D2D2D; border-radius: 8px; cursor: pointer; transform: translateY(400px); opacity: 0; transition: transform 0.5s cubic-bezier(0.22,1,0.36,1), opacity 0.5s, box-shadow 0.2s; display: flex; flex-direction: column; align-items: center; padding: 20px 16px 12px; position: relative; overflow: hidden; }
+.card.visible { transform: translateY(0); opacity: 1; }
+.card:hover { transform: translateY(-8px) scale(1.08); box-shadow: 0 8px 32px rgba(0,0,0,0.5); }
+.card.selected { border-color: #fff !important; box-shadow: 0 0 30px rgba(255,255,255,0.4); }
+.card.dismissed { transform: rotateY(90deg) translateY(20px); opacity: 0; transition: transform 0.4s, opacity 0.3s; }
+.card-icon { width: 60px; height: 60px; display: flex; align-items: center; justify-content: center; margin-bottom: 12px; }
+.card-icon svg { width: 48px; height: 48px; }
+.card-name { color: #fff; font-family: 'Courier New', monospace; font-size: 14px; font-weight: bold; text-align: center; margin-bottom: 8px; letter-spacing: 1px; }
+.card-desc { color: #aaa; font-family: 'Courier New', monospace; font-size: 11px; text-align: center; line-height: 1.4; flex: 1; }
+.card-category { color: #888; font-family: 'Courier New', monospace; font-size: 9px; text-transform: uppercase; letter-spacing: 2px; margin-top: 8px; }
 </style>
 </head>
 <body>
@@ -32,6 +43,7 @@ canvas { display: block; }
 <div id="hp-display">HP: 3</div>
 <div id="boss-hp-bar"><div id="boss-hp-fill"></div></div>
 <div id="game-over"><h1>GAME OVER</h1><p>CLICK TO RESTART</p></div>
+<div id="card-overlay"></div>
 <div id="damage-flash"></div>
 <div id="boss-death-flash"></div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -223,6 +235,94 @@ const aimPoint = new THREE.Vector3();
 
 // Ship original materials (for damage flash)
 let shipOriginalMats = [];
+
+// ============================================================
+// CARD SYSTEM STATE
+// ============================================================
+const weaponState = {
+    firePattern: 'default',
+    modifier: null,
+    buffs: []
+};
+
+let cardPickNumber = 0; // 0 = no picks yet, 1 = first pick done, 2 = both done
+let cardPickActive = false;
+let cardTransitionTimer = 0;
+let voidZoneActive = false;
+let voidZoneTimer = 0;
+let voidParticles = [];
+const VOID_PARTICLE_COUNT = 40;
+let savedFogNear = 80, savedFogFar = 450;
+
+// Card effect pools (object pools for DOT zones, gravity wells, etc.)
+const dotZones = [];
+const gravityWells = [];
+const shatterFrags = [];
+let rearGunnerGroup = null;
+let rearGunnerTimer = 0;
+let magnetRing = null;
+
+// Card definitions
+const CARD_DB = {
+    // FIRE PATTERNS
+    splitshot:     { name: 'SPLITSHOT', category: 'FIRE PATTERN', rarity: 'common', color: '#81B29A',
+                     desc: 'Fire 3 projectiles in a spread pattern. Each deals reduced damage.',
+                     icon: '<line x1="24" y1="40" x2="24" y2="12" stroke="white" stroke-width="2"/><line x1="24" y1="40" x2="10" y2="14" stroke="white" stroke-width="2"/><line x1="24" y1="40" x2="38" y2="14" stroke="white" stroke-width="2"/>' },
+    piercing:      { name: 'PIERCING ROUND', category: 'FIRE PATTERN', rarity: 'uncommon', color: '#5B8BA0',
+                     desc: 'Projectiles pass through enemies, hitting all in their path.',
+                     icon: '<line x1="24" y1="42" x2="24" y2="6" stroke="white" stroke-width="2.5"/><circle cx="24" cy="20" r="4" fill="none" stroke="white" stroke-width="1.5"/><circle cx="24" cy="32" r="4" fill="none" stroke="white" stroke-width="1.5"/>' },
+    ricochet:      { name: 'RICOCHET', category: 'FIRE PATTERN', rarity: 'rare', color: '#E63988',
+                     desc: 'Projectiles bounce off walls and seek nearby enemies.',
+                     icon: '<polyline points="10,40 20,24 34,30 42,10" fill="none" stroke="white" stroke-width="2"/><line x1="18" y1="18" x2="22" y2="30" stroke="white" stroke-width="1" opacity="0.5"/>' },
+    homing:        { name: 'HOMING PULSE', category: 'FIRE PATTERN', rarity: 'uncommon', color: '#5B8BA0',
+                     desc: 'Slower projectiles that gently track the nearest enemy.',
+                     icon: '<path d="M12,38 Q24,10 36,24" fill="none" stroke="white" stroke-width="2"/><circle cx="36" cy="24" r="3" fill="white"/>' },
+    rapid:         { name: 'RAPID BURST', category: 'FIRE PATTERN', rarity: 'common', color: '#81B29A',
+                     desc: 'Double fire rate. Smaller, faster projectiles.',
+                     icon: '<line x1="14" y1="12" x2="34" y2="12" stroke="white" stroke-width="2"/><line x1="14" y1="19" x2="34" y2="19" stroke="white" stroke-width="2"/><line x1="14" y1="26" x2="34" y2="26" stroke="white" stroke-width="2"/><line x1="14" y1="33" x2="34" y2="33" stroke="white" stroke-width="2"/><line x1="14" y1="40" x2="34" y2="40" stroke="white" stroke-width="2"/>' },
+    heavy:         { name: 'HEAVY CANNON', category: 'FIRE PATTERN', rarity: 'rare', color: '#E63988',
+                     desc: 'Slow but devastating. Triple damage, big projectiles.',
+                     icon: '<rect x="18" y="8" width="12" height="36" rx="2" fill="white"/>' },
+    // MODIFIERS
+    incendiary:    { name: 'INCENDIARY', category: 'MODIFIER', rarity: 'common', color: '#81B29A',
+                     desc: 'Hits create a burning zone that damages nearby enemies.',
+                     icon: '<circle cx="24" cy="24" r="8" fill="none" stroke="white" stroke-width="1.5"/><polygon points="24,12 27,18 24,16 21,18" fill="white"/><polygon points="30,16 32,22 29,20" fill="white"/><polygon points="18,16 16,22 19,20" fill="white"/>' },
+    cryo:          { name: 'CRYO SHARD', category: 'MODIFIER', rarity: 'common', color: '#81B29A',
+                     desc: 'Hits slow enemy movement and fire rate by 50%.',
+                     icon: '<polygon points="24,8 34,16 34,32 24,40 14,32 14,16" fill="none" stroke="white" stroke-width="2"/>' },
+    chain:         { name: 'CHAIN LIGHTNING', category: 'MODIFIER', rarity: 'uncommon', color: '#5B8BA0',
+                     desc: 'Hits arc to one nearby enemy, dealing bonus damage.',
+                     icon: '<polyline points="12,10 20,20 16,24 28,34 24,38 36,46" fill="none" stroke="white" stroke-width="2.5"/>' },
+    void_collapse: { name: 'VOID COLLAPSE', category: 'MODIFIER', rarity: 'rare', color: '#E63988',
+                     desc: 'Kills create a gravity well that pulls enemies inward.',
+                     icon: '<circle cx="24" cy="24" r="10" fill="none" stroke="white" stroke-width="1.5"/><line x1="24" y1="8" x2="24" y2="16" stroke="white" stroke-width="1.5"/><line x1="24" y1="32" x2="24" y2="40" stroke="white" stroke-width="1.5"/><line x1="8" y1="24" x2="16" y2="24" stroke="white" stroke-width="1.5"/><line x1="32" y1="24" x2="40" y2="24" stroke="white" stroke-width="1.5"/>' },
+    shatter:       { name: 'SHATTER', category: 'MODIFIER', rarity: 'uncommon', color: '#5B8BA0',
+                     desc: 'Kills explode into 4 fragment projectiles that damage nearby enemies.',
+                     icon: '<circle cx="24" cy="24" r="8" fill="none" stroke="white" stroke-width="1.5" stroke-dasharray="4 2"/><line x1="24" y1="24" x2="12" y2="12" stroke="white" stroke-width="1.5"/><line x1="24" y1="24" x2="36" y2="12" stroke="white" stroke-width="1.5"/><line x1="24" y1="24" x2="12" y2="36" stroke="white" stroke-width="1.5"/><line x1="24" y1="24" x2="36" y2="36" stroke="white" stroke-width="1.5"/>' },
+    // SHIP BUFFS
+    overclock:     { name: 'OVERCLOCK BOOST', category: 'SHIP BUFF', rarity: 'common', color: '#81B29A',
+                     desc: 'Boost is faster, recharges quicker, drains slower.',
+                     icon: '<polyline points="16,28 24,16 32,28" fill="none" stroke="white" stroke-width="2.5"/><polyline points="16,36 24,24 32,36" fill="none" stroke="white" stroke-width="2.5"/>' },
+    magnetic:      { name: 'MAGNETIC FIELD', category: 'SHIP BUFF', rarity: 'common', color: '#81B29A',
+                     desc: 'Triple shard collection radius. Shards drift toward you.',
+                     icon: '<circle cx="24" cy="24" r="6" fill="none" stroke="white" stroke-width="1.5"/><circle cx="24" cy="24" r="12" fill="none" stroke="white" stroke-width="1" opacity="0.6"/><circle cx="24" cy="24" r="18" fill="none" stroke="white" stroke-width="0.8" opacity="0.3"/>' },
+    reflector:     { name: 'REFLECTOR SHIELD', category: 'SHIP BUFF', rarity: 'uncommon', color: '#5B8BA0',
+                     desc: 'Barrel roll reflects enemy projectiles back at 2x damage.',
+                     icon: '<path d="M10,36 Q24,8 38,36" fill="none" stroke="white" stroke-width="2"/><polyline points="34,28 40,24 36,18" fill="none" stroke="white" stroke-width="1.5"/>' },
+    rear_gunner:   { name: 'REAR GUNNER', category: 'SHIP BUFF', rarity: 'uncommon', color: '#5B8BA0',
+                     desc: 'Auto-turret behind your ship fires at enemies in a rear arc.',
+                     icon: '<rect x="20" y="24" width="8" height="12" fill="white"/><polygon points="22,24 26,24 24,16" fill="white"/><line x1="24" y1="36" x2="24" y2="44" stroke="white" stroke-width="1.5"/>' },
+    phase_shift:   { name: 'PHASE SHIFT', category: 'SHIP BUFF', rarity: 'rare', color: '#E63988',
+                     desc: 'Barrel roll becomes a teleport dodge. Instant 8-unit shift.',
+                     icon: '<line x1="12" y1="24" x2="20" y2="24" stroke="white" stroke-width="2" stroke-dasharray="3 3"/><line x1="28" y1="24" x2="36" y2="24" stroke="white" stroke-width="2"/><circle cx="36" cy="24" r="3" fill="none" stroke="white" stroke-width="1.5"/>' }
+};
+
+// Category pools for card picks
+const FIRE_PATTERNS = ['splitshot', 'piercing', 'ricochet', 'homing', 'rapid', 'heavy'];
+const MODIFIERS = ['incendiary', 'cryo', 'chain', 'void_collapse', 'shatter'];
+const SHIP_BUFFS = ['overclock', 'magnetic', 'reflector', 'rear_gunner', 'phase_shift'];
+
+let shuffledFire, shuffledMod, shuffledBuff;
 
 // Stored reference to main directional light
 let mainDirLight = null;
@@ -591,6 +691,19 @@ function initInput() {
 
 function triggerBarrelRoll(direction) {
     if (barrelRoll.active || barrelRoll.cooldownTimer > 0) return;
+
+    // Phase shift: instant teleport instead of roll
+    if (weaponState.buffs.includes('phase_shift')) {
+        barrelRoll.active = true;
+        barrelRoll.progress = 0;
+        barrelRoll.direction = direction;
+        // Instant offset shift
+        targetOffset.x += direction * 8;
+        targetOffset.x = THREE.MathUtils.clamp(targetOffset.x, -BOUNDS.MOVE_X, BOUNDS.MOVE_X);
+        shipOffset.x = targetOffset.x; // Instant, no lerp
+        return;
+    }
+
     barrelRoll.active = true;
     barrelRoll.progress = 0;
     barrelRoll.direction = direction;
@@ -1836,8 +1949,9 @@ function updateDrones(dt) {
         d.rotation.x += dt * 1.0;
         d.rotation.y += dt * 0.7;
 
-        // Sine-wave drift
-        d.userData.phase += dt;
+        // Sine-wave drift (halved if slowed)
+        const speedMult = d.userData.slowed ? 0.5 : 1.0;
+        d.userData.phase += dt * speedMult;
         const driftX = Math.sin(d.userData.phase * 1.2) * 3;
         const driftY = Math.cos(d.userData.phase * 0.8) * 2;
         d.position.x = d.userData.basePos.x + driftX;
@@ -1882,7 +1996,8 @@ function updateTurrets(dt) {
         }
 
         // Fire logic
-        t.userData.fireTimer -= dt;
+        const tSpeedMult = t.userData.slowed ? 0.5 : 1.0;
+        t.userData.fireTimer -= dt * tSpeedMult;
         if (t.userData.fireTimer <= 0 && !t.userData.charging) {
             t.userData.charging = true;
             t.userData.chargeTimer = COMBAT.TURRET_CHARGE_TIME;
@@ -2027,7 +2142,24 @@ function enemyDeath(enemy) {
         score += 150;
     }
 
+    triggerModifierOnKill(enemy, pos);
     document.getElementById('score').textContent = score;
+}
+
+function hitEnemy(p, enemy, hitbox) {
+    const dmg = p.userData.damage || 1;
+    if (!p.userData.piercing) { p.userData.active = false; p.visible = false; }
+    enemy.userData.hp -= dmg;
+    enemy.userData.flashTimer = 0.08;
+    triggerModifierOnHit(enemy, enemy.position ? enemy.position.clone() : new THREE.Vector3());
+    if (enemy.userData.hp <= 0) {
+        if (enemy.userData.type === 'flyer') {
+            scatterFormationGroup(enemy.userData.groupId);
+            const grp = formationGroups.find(g => g.id === enemy.userData.groupId);
+            if (grp) grp.members = grp.members.filter(m => m !== enemy);
+        }
+        enemyDeath(enemy);
+    }
 }
 
 function checkCollisions() {
@@ -2038,44 +2170,26 @@ function checkCollisions() {
         for (const d of drones) {
             if (!d.userData.active) continue;
             if (p.position.distanceTo(d.position) < COMBAT.DRONE_HITBOX + 0.3) {
-                p.userData.active = false;
-                p.visible = false;
-                d.userData.hp--;
-                d.userData.flashTimer = 0.08;
-                if (d.userData.hp <= 0) enemyDeath(d);
+                hitEnemy(p, d, COMBAT.DRONE_HITBOX);
                 break;
             }
         }
+        if (!p.userData.active && !p.userData.piercing) continue;
         if (!p.userData.active) continue;
 
         for (const t of turrets) {
             if (!t.userData.active) continue;
             if (p.position.distanceTo(t.position) < COMBAT.TURRET_HITBOX + 0.3) {
-                p.userData.active = false;
-                p.visible = false;
-                t.userData.hp--;
-                t.userData.flashTimer = 0.08;
-                if (t.userData.hp <= 0) enemyDeath(t);
+                hitEnemy(p, t, COMBAT.TURRET_HITBOX);
                 break;
             }
         }
         if (!p.userData.active) continue;
 
-        // vs formation flyers
         for (const f of formationFlyers) {
             if (!f.userData.active) continue;
             if (p.position.distanceTo(f.position) < COMBAT.FLYER_HITBOX + 0.3) {
-                p.userData.active = false;
-                p.visible = false;
-                f.userData.hp--;
-                f.userData.flashTimer = 0.08;
-                if (f.userData.hp <= 0) {
-                    scatterFormationGroup(f.userData.groupId);
-                    enemyDeath(f);
-                    // Remove from group members
-                    const grp = formationGroups.find(g => g.id === f.userData.groupId);
-                    if (grp) grp.members = grp.members.filter(m => m !== f);
-                }
+                hitEnemy(p, f, COMBAT.FLYER_HITBOX);
                 break;
             }
         }
@@ -2084,9 +2198,8 @@ function checkCollisions() {
         // vs miniboss
         if (bossState.active && !bossState.dying) {
             if (p.position.distanceTo(boss.position) < COMBAT.BOSS_HITBOX + 0.3) {
-                p.userData.active = false;
-                p.visible = false;
-                damageBoss(1);
+                if (!p.userData.piercing) { p.userData.active = false; p.visible = false; }
+                damageBoss(p.userData.damage || 1);
             }
         }
     }
@@ -2096,10 +2209,44 @@ function checkCollisions() {
     for (const p of enemyProjectiles) {
         if (!p.userData.active) continue;
         if (p.position.distanceTo(shipGroup.position) < COMBAT.PLAYER_HITBOX + 0.5) {
+            // Reflector shield: during barrel roll, reflect projectiles
+            if (barrelRoll.active && weaponState.buffs.includes('reflector')) {
+                p.userData.velocity.negate();
+                p.userData.damage = 2;
+                p.userData.reflected = true;
+                // Turn gold and add to player projectiles logically
+                // Just reverse and let it hit enemies naturally
+                spawnFragments(p.position, 0xFFD166, 2); // flash
+                continue;
+            }
             p.userData.active = false;
             p.visible = false;
             spawnFragments(p.position, 0xE63988, 3);
             if (!isInvuln) damagePlayer();
+        }
+    }
+
+    // Reflected enemy projectiles vs enemies
+    for (const p of enemyProjectiles) {
+        if (!p.userData.active || !p.userData.reflected) continue;
+        const allEn = [...drones, ...turrets, ...formationFlyers];
+        for (const e of allEn) {
+            if (!e.userData.active) continue;
+            const hitbox = e.userData.hitbox || 1.2;
+            if (p.position.distanceTo(e.position) < hitbox + 0.5) {
+                p.userData.active = false;
+                p.visible = false;
+                e.userData.hp -= (p.userData.damage || 2);
+                e.userData.flashTimer = 0.08;
+                if (e.userData.hp <= 0) enemyDeath(e);
+                break;
+            }
+        }
+        if (!p.userData.active) continue;
+        if (bossState.active && !bossState.dying && p.position.distanceTo(boss.position) < COMBAT.BOSS_HITBOX + 0.5) {
+            p.userData.active = false;
+            p.visible = false;
+            damageBoss(p.userData.damage || 2);
         }
     }
 }
@@ -2713,17 +2860,19 @@ function updateCombat(dt) {
         (navigator.getGamepads()[input.gamepadIndex].buttons[7]?.pressed ||
          navigator.getGamepads()[input.gamepadIndex].buttons[0]?.pressed));
 
+    const rate = getFireRate();
     if (shouldFire) {
         fireTimer += dt;
-        if (fireTimer >= 1 / COMBAT.FIRE_RATE) {
+        if (fireTimer >= 1 / rate) {
             fireTimer = 0;
-            fireProjectile();
+            fireWeapon();
         }
     } else {
-        fireTimer = 1 / COMBAT.FIRE_RATE; // Ready to fire immediately on next press
+        fireTimer = 1 / rate;
     }
 
     processSpawns();
+    checkCardPickTransitions();
     updateDrones(dt);
     updateTurrets(dt);
     updateFormationFlyers(dt);
@@ -2736,10 +2885,549 @@ function updateCombat(dt) {
     updateFragments(dt);
     updateSetPieces(dt);
     updateEndOfLevel(dt);
+    updateCardEffects(dt);
+    updateVoidZone(dt);
     updateCrosshair();
 }
 
 // ============================================================
+// ============================================================
+// CARD SYSTEM - SHUFFLE & SELECTION
+// ============================================================
+function shuffleArray(arr) {
+    const a = arr.slice();
+    for (let i = a.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [a[i], a[j]] = [a[j], a[i]];
+    }
+    return a;
+}
+
+function initCardSystem() {
+    shuffledFire = shuffleArray(FIRE_PATTERNS);
+    shuffledMod = shuffleArray(MODIFIERS);
+    shuffledBuff = shuffleArray(SHIP_BUFFS);
+    cardPickNumber = 0;
+    weaponState.firePattern = 'default';
+    weaponState.modifier = null;
+    weaponState.buffs = [];
+
+    // Create DOT zone pool
+    const dotGeo = new THREE.SphereGeometry(1.5, 6, 4);
+    for (let i = 0; i < 8; i++) {
+        const z = new THREE.Mesh(dotGeo, new THREE.MeshBasicMaterial({ color: 0xFF8C00, transparent: true, opacity: 0.6 }));
+        z.visible = false;
+        z.userData = { active: false, life: 0, maxLife: 2 };
+        scene.add(z);
+        dotZones.push(z);
+    }
+    // Gravity well pool
+    const wellGeo = new THREE.SphereGeometry(2, 8, 6);
+    for (let i = 0; i < 4; i++) {
+        const w = new THREE.Mesh(wellGeo, new THREE.MeshBasicMaterial({ color: 0x4400AA, transparent: true, opacity: 0.5 }));
+        w.visible = false;
+        w.userData = { active: false, life: 0, maxLife: 1.5 };
+        scene.add(w);
+        gravityWells.push(w);
+    }
+    // Shatter fragment pool
+    const sfGeo = new THREE.BoxGeometry(0.12, 0.12, 0.4);
+    for (let i = 0; i < 20; i++) {
+        const sf = new THREE.Mesh(sfGeo, new THREE.MeshBasicMaterial({ color: COLORS.LASER }));
+        sf.visible = false;
+        sf.userData = { active: false, velocity: new THREE.Vector3(), life: 0 };
+        scene.add(sf);
+        shatterFrags.push(sf);
+    }
+    // Void zone particles
+    const vpGeo = new THREE.SphereGeometry(0.08, 4, 2);
+    const vpMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.4 });
+    for (let i = 0; i < VOID_PARTICLE_COUNT; i++) {
+        const vp = new THREE.Mesh(vpGeo, vpMat.clone());
+        vp.visible = false;
+        vp.userData = { vel: new THREE.Vector3((Math.random()-0.5)*2, (Math.random()-0.5)*1, (Math.random()-0.5)*2) };
+        scene.add(vp);
+        voidParticles.push(vp);
+    }
+}
+
+function getCardOffering(pickIndex) {
+    return [
+        shuffledFire[pickIndex],
+        shuffledMod[pickIndex],
+        shuffledBuff[pickIndex]
+    ];
+}
+
+// ============================================================
+// CARD SYSTEM - UI
+// ============================================================
+function showCardPick() {
+    cardPickActive = true;
+    const overlay = document.getElementById('card-overlay');
+    overlay.innerHTML = '';
+    overlay.style.display = 'flex';
+
+    const offering = getCardOffering(cardPickNumber);
+    offering.forEach((cardId, i) => {
+        const card = CARD_DB[cardId];
+        const el = document.createElement('div');
+        el.className = 'card';
+        el.style.borderLeft = `4px solid ${card.color}`;
+        el.innerHTML = `
+            <div class="card-icon"><svg viewBox="0 0 48 48">${card.icon}</svg></div>
+            <div class="card-name">${card.name}</div>
+            <div class="card-desc">${card.desc}</div>
+            <div class="card-category" style="color:${card.color}">${card.category}</div>
+        `;
+        el.addEventListener('click', () => selectCard(cardId, i));
+        overlay.appendChild(el);
+        // Stagger animation
+        setTimeout(() => el.classList.add('visible'), 100 + i * 100);
+    });
+}
+
+function selectCard(cardId, selectedIndex) {
+    if (!cardPickActive) return;
+    cardPickActive = false;
+
+    const card = CARD_DB[cardId];
+    const overlay = document.getElementById('card-overlay');
+    const cards = overlay.querySelectorAll('.card');
+
+    cards.forEach((el, i) => {
+        if (i === selectedIndex) {
+            el.classList.add('selected');
+        } else {
+            el.classList.add('dismissed');
+        }
+    });
+
+    // Apply card
+    applyCard(cardId, card);
+    cardPickNumber++;
+
+    // Dismiss UI after animation
+    setTimeout(() => {
+        overlay.style.display = 'none';
+        exitCardPick();
+    }, 800);
+}
+
+function applyCard(cardId, card) {
+    if (card.category === 'FIRE PATTERN') {
+        weaponState.firePattern = cardId;
+    } else if (card.category === 'MODIFIER') {
+        weaponState.modifier = cardId;
+    } else if (card.category === 'SHIP BUFF') {
+        weaponState.buffs.push(cardId);
+        // Apply immediate buff effects
+        if (cardId === 'overclock') {
+            FLIGHT.BOOST_MULTIPLIER = 2.0;
+            FLIGHT.BOOST_RECHARGE_TIME = 1.5;
+        }
+        if (cardId === 'magnetic') {
+            COMBAT.SHARD_COLLECT_RADIUS = 9;
+            // Create visual ring if not yet
+            if (!magnetRing) {
+                const ringGeo = new THREE.RingGeometry(8.5, 9, 24);
+                magnetRing = new THREE.Mesh(ringGeo, new THREE.MeshBasicMaterial({ color: COLORS.CURRENCY, transparent: true, opacity: 0.15, side: THREE.DoubleSide }));
+                scene.add(magnetRing);
+            }
+        }
+        if (cardId === 'rear_gunner' && !rearGunnerGroup) {
+            rearGunnerGroup = new THREE.Group();
+            const body = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.3, 0.6), new THREE.MeshPhongMaterial({ color: COLORS.SHIP_BODY, flatShading: true }));
+            const barrel = new THREE.Mesh(new THREE.ConeGeometry(0.1, 0.4, 4), new THREE.MeshPhongMaterial({ color: COLORS.SHIP_WING, flatShading: true }));
+            barrel.rotation.x = Math.PI / 2;
+            barrel.position.z = -0.4;
+            rearGunnerGroup.add(body);
+            rearGunnerGroup.add(barrel);
+            scene.add(rearGunnerGroup);
+        }
+    }
+}
+
+// ============================================================
+// CARD SYSTEM - VOID ZONE
+// ============================================================
+function enterVoidZone() {
+    voidZoneActive = true;
+    voidZoneTimer = 0;
+    savedFogNear = scene.fog.near;
+    savedFogFar = scene.fog.far;
+}
+
+function exitVoidZone() {
+    voidZoneActive = false;
+    voidZoneTimer = 0;
+}
+
+function updateVoidZone(dt) {
+    if (gameState === 'CARD_PICK') {
+        voidZoneTimer += dt;
+        const t = Math.min(voidZoneTimer / 1, 1);
+        scene.fog.near = savedFogNear - t * (savedFogNear - 5);
+        scene.fog.far = savedFogFar - t * (savedFogFar - 60);
+
+        // Void particles
+        for (const vp of voidParticles) {
+            if (!vp.visible) {
+                vp.visible = true;
+                vp.position.copy(shipGroup.position);
+                vp.position.x += (Math.random() - 0.5) * 40;
+                vp.position.y += (Math.random() - 0.5) * 20;
+                vp.position.z += (Math.random() - 0.5) * 40;
+            }
+            vp.position.addScaledVector(vp.userData.vel, dt);
+            vp.material.opacity = 0.2 + Math.sin(elapsedTime * 2 + vp.position.x) * 0.15;
+        }
+    } else if (!voidZoneActive && scene.fog.near < 75) {
+        // Restore fog
+        scene.fog.near += dt * 60;
+        scene.fog.far += dt * 300;
+        if (scene.fog.near >= savedFogNear) scene.fog.near = savedFogNear;
+        if (scene.fog.far >= savedFogFar) scene.fog.far = savedFogFar;
+        // Hide particles
+        for (const vp of voidParticles) vp.visible = false;
+    }
+}
+
+function enterCardPick() {
+    gameState = 'CARD_PICK';
+    enterVoidZone();
+    setTimeout(() => showCardPick(), 1000);
+}
+
+function exitCardPick() {
+    gameState = 'PLAYING';
+    exitVoidZone();
+    cardTransitionTimer = 1.0; // Speed ramp-up timer
+}
+
+// ============================================================
+// CARD SYSTEM - WEAPON FIRE (replaces basic fireProjectile)
+// ============================================================
+function fireWeapon() {
+    aimRaycaster.setFromCamera(aimNDC, camera);
+    const baseDir = aimRaycaster.ray.direction.clone().normalize();
+
+    const fp = weaponState.firePattern;
+
+    if (fp === 'splitshot') {
+        const right = new THREE.Vector3().crossVectors(baseDir, _worldUp).normalize();
+        for (const angle of [-0.087, 0, 0.087]) { // ~5 degrees
+            const dir = baseDir.clone().addScaledVector(right, Math.tan(angle)).normalize();
+            spawnPlayerProj(dir, COMBAT.PROJ_SPEED, 0.7, false);
+        }
+    } else if (fp === 'piercing') {
+        spawnPlayerProj(baseDir, COMBAT.PROJ_SPEED, 1.0, true);
+    } else if (fp === 'ricochet') {
+        const p = spawnPlayerProj(baseDir, COMBAT.PROJ_SPEED, 1.0, false);
+        if (p) p.userData.canBounce = true;
+    } else if (fp === 'homing') {
+        const p = spawnPlayerProj(baseDir, 60, 1.0, false);
+        if (p) p.userData.homing = true;
+    } else if (fp === 'rapid') {
+        spawnPlayerProj(baseDir, COMBAT.PROJ_SPEED * 1.1, 0.5, false);
+    } else if (fp === 'heavy') {
+        const p = spawnPlayerProj(baseDir, COMBAT.PROJ_SPEED * 0.8, 3.0, false);
+        if (p) { p.userData.damage = 3; p.material.color.setHex(0xFFE080); }
+        // Mini screen shake
+        cameraShakeTimer = 0.05;
+        cameraShakeIntensity = 0.15;
+    } else {
+        // Default
+        spawnPlayerProj(baseDir, COMBAT.PROJ_SPEED, 1.0, false);
+    }
+}
+
+function spawnPlayerProj(dir, speed, scale, piercing) {
+    for (const p of playerProjectiles) {
+        if (!p.userData.active) {
+            p.userData.active = true;
+            p.userData.traveled = 0;
+            p.userData.damage = (weaponState.firePattern === 'heavy') ? 3 : 1;
+            p.userData.piercing = piercing;
+            p.userData.canBounce = false;
+            p.userData.homing = false;
+            p.visible = true;
+            p.position.copy(shipGroup.position);
+            p.userData.velocity.copy(dir).multiplyScalar(speed);
+            p.lookAt(p.position.clone().add(dir));
+            p.scale.set(scale, scale, scale);
+            p.material.color.setHex(COLORS.LASER);
+            return p;
+        }
+    }
+    return null;
+}
+
+function getFireRate() {
+    const fp = weaponState.firePattern;
+    if (fp === 'rapid') return COMBAT.FIRE_RATE * 2;
+    if (fp === 'heavy') return COMBAT.FIRE_RATE / 2;
+    return COMBAT.FIRE_RATE;
+}
+
+// ============================================================
+// CARD SYSTEM - MODIFIER EFFECTS
+// ============================================================
+function triggerModifierOnHit(enemy, hitPos) {
+    const mod = weaponState.modifier;
+    if (!mod) return;
+
+    if (mod === 'incendiary') {
+        for (const z of dotZones) {
+            if (!z.userData.active) {
+                z.userData.active = true;
+                z.userData.life = 0;
+                z.position.copy(hitPos);
+                z.visible = true;
+                z.material.opacity = 0.6;
+                z.scale.set(1, 1, 1);
+                break;
+            }
+        }
+    } else if (mod === 'cryo') {
+        enemy.userData.slowed = true;
+        enemy.userData.slowTimer = 2.0;
+        if (enemy.isMesh && enemy.material) {
+            enemy.userData.origColor = enemy.material.color.getHex();
+            enemy.material.color.setHex(0xA0D2DB);
+        } else if (enemy.isGroup && enemy.children[0]) {
+            enemy.userData.origColor = enemy.children[0].material.color.getHex();
+            enemy.children[0].material.color.setHex(0xA0D2DB);
+        }
+    } else if (mod === 'chain') {
+        // Find nearest other enemy within 8 units
+        let nearest = null, nearDist = 8;
+        const allEnemies = [...drones, ...turrets, ...formationFlyers];
+        for (const e of allEnemies) {
+            if (!e.userData.active || e === enemy) continue;
+            const ePos = e.position || (e.isGroup ? e.position : null);
+            if (!ePos) continue;
+            const d = ePos.distanceTo(hitPos);
+            if (d < nearDist) { nearDist = d; nearest = e; }
+        }
+        if (nearest) {
+            nearest.userData.hp--;
+            nearest.userData.flashTimer = 0.08;
+            if (nearest.userData.hp <= 0) enemyDeath(nearest);
+            // Brief lightning line visual
+            spawnChainLine(hitPos, nearest.position);
+        }
+    }
+}
+
+function triggerModifierOnKill(enemy, deathPos) {
+    const mod = weaponState.modifier;
+    if (!mod) return;
+
+    if (mod === 'void_collapse') {
+        for (const w of gravityWells) {
+            if (!w.userData.active) {
+                w.userData.active = true;
+                w.userData.life = 0;
+                w.position.copy(deathPos);
+                w.visible = true;
+                w.material.opacity = 0.5;
+                break;
+            }
+        }
+    } else if (mod === 'shatter') {
+        for (let i = 0; i < 4; i++) {
+            for (const sf of shatterFrags) {
+                if (!sf.userData.active) {
+                    sf.userData.active = true;
+                    sf.userData.life = 0;
+                    sf.position.copy(deathPos);
+                    sf.visible = true;
+                    sf.userData.velocity.set((Math.random()-0.5)*30, (Math.random()-0.5)*15, (Math.random()-0.5)*30);
+                    break;
+                }
+            }
+        }
+    }
+}
+
+function spawnChainLine(from, to) {
+    // Temporary line geometry
+    const geo = new THREE.BufferGeometry().setFromPoints([from.clone(), to.clone()]);
+    const mat = new THREE.LineBasicMaterial({ color: 0x00F0FF, transparent: true, opacity: 1 });
+    const line = new THREE.Line(geo, mat);
+    scene.add(line);
+    setTimeout(() => { scene.remove(line); geo.dispose(); mat.dispose(); }, 150);
+}
+
+// ============================================================
+// CARD SYSTEM - EFFECT UPDATES
+// ============================================================
+function updateCardEffects(dt) {
+    // DOT zones (incendiary)
+    for (const z of dotZones) {
+        if (!z.userData.active) continue;
+        z.userData.life += dt;
+        z.material.opacity = 0.6 * (1 - z.userData.life / z.userData.maxLife);
+        z.scale.setScalar(1 + z.userData.life * 0.3);
+        // Damage enemies in range
+        const allEnemies = [...drones, ...turrets, ...formationFlyers];
+        for (const e of allEnemies) {
+            if (!e.userData.active) continue;
+            if ((e.position || e.position).distanceTo(z.position) < 2) {
+                if (!e.userData.dotCooldown || e.userData.dotCooldown <= 0) {
+                    e.userData.hp--;
+                    e.userData.flashTimer = 0.08;
+                    e.userData.dotCooldown = 1.0;
+                    if (e.userData.hp <= 0) enemyDeath(e);
+                }
+            }
+        }
+        if (z.userData.life >= z.userData.maxLife) { z.userData.active = false; z.visible = false; }
+    }
+
+    // DOT cooldown on enemies
+    const allEn = [...drones, ...turrets, ...formationFlyers];
+    for (const e of allEn) {
+        if (e.userData.dotCooldown > 0) e.userData.dotCooldown -= dt;
+        // Cryo slow timer
+        if (e.userData.slowed) {
+            e.userData.slowTimer -= dt;
+            if (e.userData.slowTimer <= 0) {
+                e.userData.slowed = false;
+                if (e.isMesh && e.material && e.userData.origColor !== undefined) {
+                    e.material.color.setHex(e.userData.origColor);
+                } else if (e.isGroup && e.children[0] && e.userData.origColor !== undefined) {
+                    e.children[0].material.color.setHex(e.userData.origColor);
+                }
+            }
+        }
+    }
+
+    // Gravity wells (void collapse)
+    for (const w of gravityWells) {
+        if (!w.userData.active) continue;
+        w.userData.life += dt;
+        w.material.opacity = 0.5 * (1 - w.userData.life / w.userData.maxLife);
+        w.rotation.y += dt * 3;
+        // Pull enemies
+        for (const e of allEn) {
+            if (!e.userData.active) continue;
+            const d = (e.position).distanceTo(w.position);
+            if (d < 6 && d > 0.5) {
+                const pull = new THREE.Vector3().subVectors(w.position, e.position).normalize().multiplyScalar(dt * 5);
+                e.position.add(pull);
+                if (e.userData.basePos) e.userData.basePos.add(pull);
+            }
+        }
+        if (w.userData.life >= w.userData.maxLife) { w.userData.active = false; w.visible = false; }
+    }
+
+    // Shatter fragments
+    for (const sf of shatterFrags) {
+        if (!sf.userData.active) continue;
+        sf.userData.life += dt;
+        sf.position.addScaledVector(sf.userData.velocity, dt);
+        // Check enemy hits
+        for (const e of allEn) {
+            if (!e.userData.active) continue;
+            if (sf.position.distanceTo(e.position) < (e.userData.hitbox || 1.2) + 0.2) {
+                e.userData.hp--;
+                e.userData.flashTimer = 0.08;
+                if (e.userData.hp <= 0) enemyDeath(e);
+                sf.userData.active = false;
+                sf.visible = false;
+                break;
+            }
+        }
+        if (sf.userData.life > 1.0) { sf.userData.active = false; sf.visible = false; }
+    }
+
+    // Homing projectile update
+    if (weaponState.firePattern === 'homing') {
+        for (const p of playerProjectiles) {
+            if (!p.userData.active || !p.userData.homing) continue;
+            let nearest = null, nearDist = 20;
+            for (const e of allEn) {
+                if (!e.userData.active) continue;
+                const d = e.position.distanceTo(p.position);
+                if (d < nearDist) { nearDist = d; nearest = e; }
+            }
+            if (nearest) {
+                const toTarget = new THREE.Vector3().subVectors(nearest.position, p.position).normalize();
+                const currentDir = p.userData.velocity.clone().normalize();
+                currentDir.lerp(toTarget, 0.03);
+                currentDir.normalize();
+                const speed = p.userData.velocity.length();
+                p.userData.velocity.copy(currentDir).multiplyScalar(speed);
+                p.lookAt(p.position.clone().add(currentDir));
+            }
+        }
+    }
+
+    // Magnetic field visual + drift
+    if (weaponState.buffs.includes('magnetic') && magnetRing) {
+        magnetRing.position.copy(shipGroup.position);
+        magnetRing.rotation.x = -Math.PI / 2;
+        magnetRing.visible = true;
+        // Shards drift toward player
+        for (const s of shards) {
+            if (!s.userData.active) continue;
+            const d = s.position.distanceTo(shipGroup.position);
+            if (d < 9 && d > 0.5) {
+                const pull = new THREE.Vector3().subVectors(shipGroup.position, s.position).normalize().multiplyScalar(dt * 10);
+                s.position.add(pull);
+            }
+        }
+    }
+
+    // Rear gunner
+    if (weaponState.buffs.includes('rear_gunner') && rearGunnerGroup) {
+        rearGunnerGroup.position.copy(shipGroup.position);
+        rearGunnerGroup.position.addScaledVector(splineCurve.getTangentAt(Math.min(splineProgress, 0.999)), 2);
+        rearGunnerGroup.quaternion.copy(shipGroup.quaternion);
+        rearGunnerTimer += dt;
+        if (rearGunnerTimer >= 1.5) {
+            rearGunnerTimer = 0;
+            // Find enemy in rear arc
+            const shipFwd = splineCurve.getTangentAt(Math.min(splineProgress, 0.999)).negate();
+            let target = null, tDist = 40;
+            for (const e of allEn) {
+                if (!e.userData.active) continue;
+                const toE = new THREE.Vector3().subVectors(e.position, shipGroup.position);
+                if (toE.dot(shipFwd) > 0) {
+                    const d = toE.length();
+                    if (d < tDist) { tDist = d; target = e; }
+                }
+            }
+            if (target) {
+                const p = spawnPlayerProj(
+                    new THREE.Vector3().subVectors(target.position, rearGunnerGroup.position).normalize(),
+                    60, 0.4, false
+                );
+                if (p) p.position.copy(rearGunnerGroup.position);
+            }
+        }
+    }
+
+    // Reflector shield (handled in collision)
+    // Phase shift (handled in barrel roll trigger)
+}
+
+// ============================================================
+// CARD SYSTEM - STATE TRANSITIONS
+// ============================================================
+function checkCardPickTransitions() {
+    // First card pick: t 0.30-0.38
+    if (cardPickNumber === 0 && splineProgress >= 0.30 && splineProgress < 0.38 && gameState === 'PLAYING') {
+        enterCardPick();
+    }
+    // Second card pick: t 0.65-0.73
+    if (cardPickNumber === 1 && splineProgress >= 0.65 && splineProgress < 0.73 && gameState === 'PLAYING') {
+        enterCardPick();
+    }
+}
+
 // DEBUG TOGGLE
 // ============================================================
 window.addEventListener('keydown', (e) => {
@@ -2767,6 +3455,15 @@ function animate() {
         updateSpeedLines(dt);
         updateCombat(dt);
         updateArchCulling();
+    } else if (gameState === 'CARD_PICK') {
+        // Slow drift along spline
+        splineProgress += (5 * dt) / splineLength;
+        const splinePoint = splineCurve.getPointAt(Math.min(splineProgress, 0.999));
+        const tangent = splineCurve.getTangentAt(Math.min(splineProgress, 0.999));
+        shipGroup.position.lerp(splinePoint, 0.02);
+        updateCamera(dt);
+        updateVoidZone(dt);
+        updateArchCulling();
     }
 
     renderer.render(scene, camera);
@@ -2786,6 +3483,7 @@ function init() {
     initLighting();
     buildArchitecture();
     initCombat();
+    initCardSystem();
     initInput();
 
     window.addEventListener('resize', onResize);
