@@ -4,24 +4,40 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>BRUTFOX</title>
+<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap" rel="stylesheet">
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
-body { overflow: hidden; background: #000; }
+body { overflow: hidden; background: #000; font-family: 'Share Tech Mono', 'Courier New', monospace; }
 canvas { display: block; }
 #crosshair { position: fixed; pointer-events: none; z-index: 10; }
 #crosshair-ring { width: 24px; height: 24px; border: 1.5px solid rgba(255,255,255,0.6); border-radius: 50%; position: absolute; top: -12px; left: -12px; transition: border-color 0.1s; }
 #crosshair-dot { width: 3px; height: 3px; background: rgba(255,255,255,0.8); border-radius: 50%; position: absolute; top: -1.5px; left: -1.5px; }
 #crosshair.hostile #crosshair-ring { border-color: rgba(230,57,136,0.9); }
 #crosshair.hostile #crosshair-dot { background: rgba(230,57,136,0.9); }
-#score { position: fixed; top: 16px; left: 16px; color: #fff; font-family: 'Courier New', monospace; font-size: 18px; z-index: 10; pointer-events: none; opacity: 0.8; }
-#shard-count { position: fixed; top: 40px; left: 16px; color: #FFBE0B; font-family: 'Courier New', monospace; font-size: 14px; z-index: 10; pointer-events: none; opacity: 0.8; }
-#hp-display { position: fixed; top: 16px; right: 16px; color: #fff; font-family: 'Courier New', monospace; font-size: 18px; z-index: 10; pointer-events: none; opacity: 0.8; }
-#boss-hp-bar { position: fixed; top: 50px; left: 50%; transform: translateX(-50%); width: 300px; height: 8px; background: rgba(0,0,0,0.5); border: 1px solid rgba(255,255,255,0.3); z-index: 10; pointer-events: none; display: none; }
-#boss-hp-fill { width: 100%; height: 100%; background: #E63988; transition: width 0.2s; }
-#game-over { position: fixed; top: 0; left: 0; width: 100%; height: 100%; display: none; z-index: 20; background: rgba(0,0,0,0.6); justify-content: center; align-items: center; flex-direction: column; cursor: pointer; }
-#game-over h1 { color: #E63988; font-family: 'Courier New', monospace; font-size: 48px; letter-spacing: 8px; }
-#game-over p { color: rgba(255,255,255,0.6); font-family: 'Courier New', monospace; font-size: 14px; margin-top: 16px; }
-#damage-flash { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(230,57,136,0.3); pointer-events: none; z-index: 15; opacity: 0; }
+#hud { position: fixed; inset: 0; pointer-events: none; z-index: 10; display: none; }
+#score-display { position: absolute; top: 16px; left: 16px; color: #fff; font-size: 22px; text-shadow: 0 1px 4px rgba(0,0,0,0.5); transition: transform 0.1s; }
+#shard-display { position: absolute; top: 16px; right: 16px; color: #fff; font-size: 14px; display: flex; align-items: center; gap: 6px; }
+.shard-icon { width: 10px; height: 10px; background: #FFBE0B; transform: rotate(45deg); display: inline-block; transition: transform 0.2s; }
+.shard-icon.pulse { transform: rotate(45deg) scale(1.3); }
+#hp-shields { position: absolute; bottom: 20px; left: 16px; display: flex; gap: 8px; }
+.shield { width: 16px; height: 18px; background: #fff; clip-path: polygon(50% 0%, 100% 30%, 100% 80%, 50% 100%, 0% 80%, 0% 30%); transition: background 0.3s; }
+.shield.lost { background: #333; }
+.shield.flash { background: #E63988; }
+#boost-bar { position: absolute; bottom: 46px; left: 16px; width: 120px; height: 4px; background: #333; }
+#boost-fill { width: 100%; height: 100%; background: #FFD166; transition: background 0.2s; }
+#active-cards { position: absolute; bottom: 20px; right: 16px; display: flex; gap: 8px; }
+.active-card { width: 40px; height: 40px; background: #2D2D2D; border-radius: 4px; display: flex; align-items: center; justify-content: center; }
+.active-card svg { width: 24px; height: 24px; }
+#boss-hp-bar { position: absolute; top: 50px; left: 50%; transform: translateX(-50%); width: 300px; display: none; text-align: center; }
+#boss-hp-label { font-size: 10px; color: #888; letter-spacing: 3px; text-transform: uppercase; margin-bottom: 4px; }
+#boss-hp-track { width: 100%; height: 6px; background: #333; }
+#boss-hp-fill { width: 100%; height: 100%; background: #E63988; transition: width 0.3s; }
+#section-title { position: absolute; top: 40%; left: 50%; transform: translate(-50%,-50%); font-size: 36px; color: #fff; letter-spacing: 8px; opacity: 0; transition: opacity 0.5s; text-shadow: 0 2px 8px rgba(0,0,0,0.5); }
+#mute-btn { position: absolute; top: 40px; right: 16px; font-size: 12px; color: #888; cursor: pointer; pointer-events: auto; }
+#game-over { position: fixed; top: 0; left: 0; width: 100%; height: 100%; display: none; z-index: 20; background: rgba(0,0,0,0.7); justify-content: center; align-items: center; flex-direction: column; cursor: pointer; }
+#game-over h1 { color: #E63988; font-size: 48px; letter-spacing: 8px; }
+#game-over p { color: rgba(255,255,255,0.6); font-size: 14px; margin-top: 16px; }
+#damage-flash { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(230,57,136,0.3); pointer-events: none; z-index: 15; opacity: 0; transition: opacity 0.2s; }
 #boss-death-flash { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: #fff; pointer-events: none; z-index: 15; opacity: 0; }
 #card-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; display: none; z-index: 25; justify-content: center; align-items: center; gap: 24px; }
 .card { width: 200px; height: 280px; background: #2D2D2D; border-radius: 8px; cursor: pointer; transform: translateY(400px); opacity: 0; transition: transform 0.5s cubic-bezier(0.22,1,0.36,1), opacity 0.5s, box-shadow 0.2s; display: flex; flex-direction: column; align-items: center; padding: 20px 16px 12px; position: relative; overflow: hidden; }
@@ -31,21 +47,54 @@ canvas { display: block; }
 .card.dismissed { transform: rotateY(90deg) translateY(20px); opacity: 0; transition: transform 0.4s, opacity 0.3s; }
 .card-icon { width: 60px; height: 60px; display: flex; align-items: center; justify-content: center; margin-bottom: 12px; }
 .card-icon svg { width: 48px; height: 48px; }
-.card-name { color: #fff; font-family: 'Courier New', monospace; font-size: 14px; font-weight: bold; text-align: center; margin-bottom: 8px; letter-spacing: 1px; }
-.card-desc { color: #aaa; font-family: 'Courier New', monospace; font-size: 11px; text-align: center; line-height: 1.4; flex: 1; }
-.card-category { color: #888; font-family: 'Courier New', monospace; font-size: 9px; text-transform: uppercase; letter-spacing: 2px; margin-top: 8px; }
+.card-name { color: #fff; font-size: 14px; font-weight: bold; text-align: center; margin-bottom: 8px; letter-spacing: 1px; }
+.card-desc { color: #aaa; font-size: 11px; text-align: center; line-height: 1.4; flex: 1; }
+.card-category { color: #888; font-size: 9px; text-transform: uppercase; letter-spacing: 2px; margin-top: 8px; }
+#title-screen { position: fixed; inset: 0; z-index: 30; display: flex; flex-direction: column; justify-content: center; align-items: center; cursor: pointer; transition: opacity 0.5s; }
+#title-screen h1 { color: #fff; font-size: 48px; letter-spacing: 8px; margin-bottom: 8px; }
+#title-screen .subtitle { color: #888; font-size: 16px; letter-spacing: 4px; margin-bottom: 40px; }
+#title-screen .prompt { color: #fff; font-size: 14px; animation: pulse 2s ease-in-out infinite; }
+#title-screen .controls { position: absolute; bottom: 20px; color: #666; font-size: 11px; }
+@keyframes pulse { 0%,100% { opacity: 0.3; } 50% { opacity: 1; } }
+#results-screen { position: fixed; inset: 0; z-index: 30; display: none; flex-direction: column; justify-content: center; align-items: center; background: rgba(0,0,0,0.85); }
+#results-screen h1 { color: #fff; font-size: 36px; letter-spacing: 6px; margin-bottom: 32px; opacity: 0; transition: opacity 0.5s; }
+.result-row { color: #aaa; font-size: 16px; margin: 6px 0; opacity: 0; transition: opacity 0.5s; display: flex; gap: 12px; }
+.result-row span { color: #fff; }
+#play-again { margin-top: 32px; padding: 12px 32px; background: transparent; border: 2px solid #E07A5F; color: #fff; font-family: inherit; font-size: 14px; letter-spacing: 3px; cursor: pointer; opacity: 0; transition: opacity 0.5s, background 0.2s; }
+#play-again:hover { background: #E07A5F; }
 </style>
 </head>
 <body>
+<div id="title-screen">
+  <h1>BRUTALIST STARFOX</h1>
+  <div class="subtitle">A RAIL SHOOTER</div>
+  <div class="prompt">CLICK TO LAUNCH</div>
+  <div class="controls">MOUSE + KEYBOARD &nbsp;//&nbsp; GAMEPAD</div>
+</div>
+<div id="hud">
+  <div id="score-display">0000000</div>
+  <div id="shard-display"><span class="shard-icon"></span> <span id="shard-num">0</span></div>
+  <div id="hp-shields"><div class="shield"></div><div class="shield"></div><div class="shield"></div></div>
+  <div id="boost-bar"><div id="boost-fill"></div></div>
+  <div id="active-cards"></div>
+  <div id="boss-hp-bar"><div id="boss-hp-label">THE STELLATED FORM</div><div id="boss-hp-track"><div id="boss-hp-fill"></div></div></div>
+  <div id="section-title"></div>
+  <div id="mute-btn">♪ ON</div>
+</div>
 <div id="crosshair"><div id="crosshair-ring"></div><div id="crosshair-dot"></div></div>
-<div id="score">0</div>
-<div id="shard-count">0 SHARDS</div>
-<div id="hp-display">HP: 3</div>
-<div id="boss-hp-bar"><div id="boss-hp-fill"></div></div>
 <div id="game-over"><h1>GAME OVER</h1><p>CLICK TO RESTART</p></div>
 <div id="card-overlay"></div>
 <div id="damage-flash"></div>
 <div id="boss-death-flash"></div>
+<div id="results-screen">
+  <h1>RUN COMPLETE</h1>
+  <div class="result-row">SCORE <span id="res-score">0</span></div>
+  <div class="result-row">ENEMIES DESTROYED <span id="res-kills">0</span></div>
+  <div class="result-row">SHARDS COLLECTED <span id="res-shards">0</span></div>
+  <div class="result-row">CARDS <span id="res-cards"></span></div>
+  <div class="result-row">TIME <span id="res-time">00:00</span></div>
+  <button id="play-again">PLAY AGAIN</button>
+</div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
 // ============================================================
@@ -131,8 +180,11 @@ const input = {
     useGamepad: false
 };
 
-let gameState = 'PLAYING';
+let gameState = 'TITLE';
 let elapsedTime = 0;
+let totalKills = 0;
+let titleOrbitAngle = 0;
+let lastSectionShown = -1;
 
 // Speed lines pool
 let speedLines = [];
@@ -707,6 +759,7 @@ function triggerBarrelRoll(direction) {
     barrelRoll.active = true;
     barrelRoll.progress = 0;
     barrelRoll.direction = direction;
+    Audio.barrelRollSfx();
 }
 
 let prevGamepadLeftX = 0;
@@ -1858,6 +1911,7 @@ function scatterFormationGroup(groupId) {
 function activateMiniboss() {
     if (bossState.active) return;
     bossState.active = true;
+    Audio.startBossMusic();
     bossState.hp = COMBAT.BOSS_HP;
     bossState.maxHp = COMBAT.BOSS_HP;
     bossState.phase = 1;
@@ -2018,6 +2072,7 @@ function updateTurrets(dt) {
                 // Only fire if player is somewhat close
                 if (t.position.distanceTo(shipGroup.position) < 100) {
                     fireEnemyProjectile(t.position, shipGroup.position.clone());
+                    Audio.enemyFire();
                 }
             }
         }
@@ -2143,7 +2198,10 @@ function enemyDeath(enemy) {
     }
 
     triggerModifierOnKill(enemy, pos);
-    document.getElementById('score').textContent = score;
+    totalKills++;
+    Audio.enemyDeath();
+    triggerKillShake(0.1, 0.1);
+    document.getElementById('score-display').textContent = String(score).padStart(7, '0');
 }
 
 function hitEnemy(p, enemy, hitbox) {
@@ -2151,6 +2209,7 @@ function hitEnemy(p, enemy, hitbox) {
     if (!p.userData.piercing) { p.userData.active = false; p.visible = false; }
     enemy.userData.hp -= dmg;
     enemy.userData.flashTimer = 0.08;
+    Audio.enemyHit();
     triggerModifierOnHit(enemy, enemy.position ? enemy.position.clone() : new THREE.Vector3());
     if (enemy.userData.hp <= 0) {
         if (enemy.userData.type === 'flyer') {
@@ -2258,11 +2317,12 @@ function damagePlayer() {
     if (playerHP <= 0) return;
     playerHP--;
     playerInvulnTimer = COMBAT.INVULN_TIME;
+    Audio.playerHit();
     playerDamageFlashTimer = 0.2;
     cameraShakeTimer = 0.3;
     cameraShakeIntensity = 0.5;
 
-    document.getElementById('hp-display').textContent = 'HP: ' + playerHP;
+    // HUD shield update handled by updateHUD()
 
     // Flash screen
     const flash = document.getElementById('damage-flash');
@@ -2326,8 +2386,7 @@ function updateShards(dt) {
             s.visible = false;
             shardCount++;
             score += 10;
-            document.getElementById('score').textContent = score;
-            document.getElementById('shard-count').textContent = shardCount + ' SHARDS';
+            Audio.shardCollect();
             // Small amber burst
             spawnFragments(s.position, COLORS.CURRENCY, 4);
         }
@@ -2636,6 +2695,7 @@ function updateBossDeathSequence(dt) {
     // t=1.0: Explosion
     if (t >= 1.0 && t < 1.1) {
         if (core) core.visible = false;
+        Audio.bossDeathSfx();
         spawnFragments(boss.position, 0xE63988, 10);
         spawnFragments(boss.position, 0x00F0FF, 10);
         spawnFragments(boss.position, 0xffffff, 10);
@@ -2662,6 +2722,8 @@ function updateBossDeathSequence(dt) {
         bossState.dying = false;
         boss.visible = false;
         bossDefeated = true;
+        Audio.stopBossMusic();
+        triggerKillShake(1.0, 1.0);
         document.getElementById('boss-hp-bar').style.display = 'none';
     }
 }
@@ -2776,13 +2838,8 @@ function updateEndOfLevel(dt) {
         scene.fog.far = 450 - fogT * 400;
         scene.fog.color.lerp(new THREE.Color(0xffffff), fogT * 0.02);
 
-        if (levelEndTimer > 2 && !document.getElementById('run-complete')) {
-            const div = document.createElement('div');
-            div.id = 'run-complete';
-            div.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);color:#fff;font-family:Courier New,monospace;font-size:32px;letter-spacing:6px;z-index:20;opacity:0;transition:opacity 1s;';
-            div.textContent = 'RUN COMPLETE';
-            document.body.appendChild(div);
-            setTimeout(() => div.style.opacity = '1', 50);
+        if (levelEndTimer > 3 && gameState !== 'RESULTS') {
+            showResultsScreen();
         }
         return;
     }
@@ -2964,6 +3021,7 @@ function getCardOffering(pickIndex) {
 // ============================================================
 function showCardPick() {
     cardPickActive = true;
+    Audio.cardAppear();
     const overlay = document.getElementById('card-overlay');
     overlay.innerHTML = '';
     overlay.style.display = 'flex';
@@ -2990,6 +3048,7 @@ function showCardPick() {
 function selectCard(cardId, selectedIndex) {
     if (!cardPickActive) return;
     cardPickActive = false;
+    Audio.cardSelect();
 
     const card = CARD_DB[cardId];
     const overlay = document.getElementById('card-overlay');
@@ -3096,19 +3155,23 @@ function updateVoidZone(dt) {
 function enterCardPick() {
     gameState = 'CARD_PICK';
     enterVoidZone();
+    Audio.setCardPickMode(true);
     setTimeout(() => showCardPick(), 1000);
 }
 
 function exitCardPick() {
     gameState = 'PLAYING';
     exitVoidZone();
-    cardTransitionTimer = 1.0; // Speed ramp-up timer
+    Audio.setCardPickMode(false);
+    cardTransitionTimer = 1.0;
+    updateActiveCardsDisplay();
 }
 
 // ============================================================
 // CARD SYSTEM - WEAPON FIRE (replaces basic fireProjectile)
 // ============================================================
 function fireWeapon() {
+    Audio.playerFire();
     aimRaycaster.setFromCamera(aimNDC, camera);
     const baseDir = aimRaycaster.ray.direction.clone().normalize();
 
@@ -3428,6 +3491,437 @@ function checkCardPickTransitions() {
     }
 }
 
+// ============================================================
+// AUDIO MANAGER
+// ============================================================
+const Audio = {
+    ctx: null, master: null, muted: false,
+    droneLFO: null, droneGain: null,
+    padOsc: null, padFilter: null, padGain: null,
+    shimmerDelay: null, shimmerTimer: 0,
+    bossKick: null, bossKickInterval: null,
+    boostOsc: null, boostGain: null,
+
+    init() {
+        this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+        this.master = this.ctx.createGain();
+        this.master.gain.value = 0.7;
+        this.master.connect(this.ctx.destination);
+    },
+
+    toggleMute() {
+        this.muted = !this.muted;
+        if (this.master) this.master.gain.value = this.muted ? 0 : 0.7;
+        document.getElementById('mute-btn').textContent = this.muted ? '♪ OFF' : '♪ ON';
+    },
+
+    // SFX helpers
+    playTone(freq, freqEnd, type, gain, dur, filterFreq) {
+        if (!this.ctx || this.muted) return;
+        const osc = this.ctx.createOscillator();
+        const g = this.ctx.createGain();
+        osc.type = type;
+        osc.frequency.setValueAtTime(freq, this.ctx.currentTime);
+        if (freqEnd !== freq) osc.frequency.linearRampToValueAtTime(freqEnd, this.ctx.currentTime + dur);
+        g.gain.setValueAtTime(gain, this.ctx.currentTime);
+        g.gain.linearRampToValueAtTime(0, this.ctx.currentTime + dur);
+        if (filterFreq) {
+            const f = this.ctx.createBiquadFilter();
+            f.type = 'bandpass'; f.frequency.value = filterFreq; f.Q.value = 5;
+            osc.connect(f); f.connect(g);
+        } else {
+            osc.connect(g);
+        }
+        g.connect(this.master);
+        osc.start(); osc.stop(this.ctx.currentTime + dur + 0.01);
+    },
+
+    playNoise(gain, dur, filterFreq, filterQ) {
+        if (!this.ctx || this.muted) return;
+        const buf = this.ctx.createBuffer(1, this.ctx.sampleRate * dur, this.ctx.sampleRate);
+        const data = buf.getChannelData(0);
+        for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+        const src = this.ctx.createBufferSource(); src.buffer = buf;
+        const g = this.ctx.createGain();
+        g.gain.setValueAtTime(gain, this.ctx.currentTime);
+        g.gain.linearRampToValueAtTime(0, this.ctx.currentTime + dur);
+        if (filterFreq) {
+            const f = this.ctx.createBiquadFilter();
+            f.type = 'bandpass'; f.frequency.value = filterFreq; f.Q.value = filterQ || 5;
+            src.connect(f); f.connect(g);
+        } else {
+            src.connect(g);
+        }
+        g.connect(this.master); src.start();
+    },
+
+    playerFire() { this.playTone(880, 440, 'square', 0.15, 0.08); },
+    enemyFire() { this.playTone(220, 220, 'triangle', 0.1, 0.15); },
+    enemyHit() { this.playNoise(0.2, 0.1, 2000, 5); },
+    enemyDeath() { this.playNoise(0.15, 0.2, 1500); this.playTone(330, 110, 'sine', 0.1, 0.3); },
+    playerHit() { this.playTone(80, 80, 'sine', 0.25, 0.4); this.playTone(1200, 1200, 'square', 0.15, 0.1); },
+    barrelRollSfx() { this.playNoise(0.1, 0.4, 500); },
+    shardCollect() { this.playTone(440, 880, 'sine', 0.1, 0.15); },
+    cardAppear() {
+        this.playTone(330, 330, 'sine', 0.08, 0.8);
+        this.playTone(440, 440, 'sine', 0.08, 0.8);
+        this.playTone(550, 550, 'sine', 0.06, 0.8);
+    },
+    cardSelect() { this.playTone(440, 440, 'sine', 0.1, 0.5); this.playTone(660, 660, 'sine', 0.08, 0.5); },
+    bossDeathSfx() {
+        this.playNoise(0.25, 0.3, 800);
+        setTimeout(() => this.playNoise(0.15, 0.5, 600), 300);
+        setTimeout(() => this.playNoise(0.1, 1.0, 400), 800);
+        this.playTone(55, 55, 'sine', 0.15, 2);
+    },
+
+    // Ambient layers
+    startAmbient() {
+        if (!this.ctx) return;
+        // Layer 1: Low drone
+        const drone = this.ctx.createOscillator();
+        this.droneGain = this.ctx.createGain();
+        drone.type = 'sine'; drone.frequency.value = 55;
+        this.droneGain.gain.value = 0.05;
+        drone.connect(this.droneGain); this.droneGain.connect(this.master);
+        drone.start();
+
+        // Layer 2: Mid pad
+        this.padOsc = this.ctx.createOscillator();
+        this.padFilter = this.ctx.createBiquadFilter();
+        this.padGain = this.ctx.createGain();
+        this.padOsc.type = 'sawtooth'; this.padOsc.frequency.value = 220;
+        this.padFilter.type = 'lowpass'; this.padFilter.frequency.value = 400; this.padFilter.Q.value = 2;
+        this.padGain.gain.value = 0.04;
+        this.padOsc.connect(this.padFilter); this.padFilter.connect(this.padGain); this.padGain.connect(this.master);
+        this.padOsc.start();
+
+        // Layer 3: shimmer handled in update
+        this.shimmerDelay = this.ctx.createDelay(1);
+        this.shimmerDelay.delayTime.value = 0.3;
+        const feedback = this.ctx.createGain(); feedback.gain.value = 0.35;
+        this.shimmerDelay.connect(feedback); feedback.connect(this.shimmerDelay);
+        this.shimmerDelay.connect(this.master);
+    },
+
+    updateAmbient(dt) {
+        if (!this.ctx) return;
+        // Shimmer notes
+        this.shimmerTimer -= dt;
+        if (this.shimmerTimer <= 0) {
+            this.shimmerTimer = 2 + Math.random() * 3;
+            const notes = [220, 262, 294, 330, 392];
+            const freq = notes[Math.floor(Math.random() * notes.length)];
+            const osc = this.ctx.createOscillator();
+            const g = this.ctx.createGain();
+            osc.type = 'sine'; osc.frequency.value = freq;
+            g.gain.setValueAtTime(0.025, this.ctx.currentTime);
+            g.gain.linearRampToValueAtTime(0, this.ctx.currentTime + 1.5);
+            const pan = this.ctx.createStereoPanner();
+            pan.pan.value = Math.random() * 2 - 1;
+            osc.connect(g); g.connect(pan); pan.connect(this.shimmerDelay);
+            osc.start(); osc.stop(this.ctx.currentTime + 1.6);
+        }
+        // Pad filter LFO
+        if (this.padFilter) {
+            this.padFilter.frequency.value = 400 + Math.sin(elapsedTime * 0.02 * Math.PI * 2) * 300;
+        }
+    },
+
+    setCardPickMode(active) {
+        if (!this.ctx) return;
+        const t = this.ctx.currentTime;
+        if (this.droneGain) this.droneGain.gain.linearRampToValueAtTime(active ? 0 : 0.05, t + 1);
+        if (this.padGain) this.padGain.gain.linearRampToValueAtTime(active ? 0.02 : 0.04, t + 1);
+    },
+
+    startBossMusic() {
+        if (!this.ctx || this.bossKickInterval) return;
+        this.bossKickInterval = setInterval(() => {
+            if (this.muted) return;
+            this.playTone(80, 40, 'sine', 0.08, 0.1);
+        }, 600);
+    },
+
+    stopBossMusic() {
+        if (this.bossKickInterval) { clearInterval(this.bossKickInterval); this.bossKickInterval = null; }
+    },
+
+    startBoost() {
+        if (!this.ctx || this.boostOsc) return;
+        this.boostOsc = this.ctx.createOscillator();
+        this.boostGain = this.ctx.createGain();
+        const lp = this.ctx.createBiquadFilter();
+        this.boostOsc.type = 'sawtooth'; this.boostOsc.frequency.value = 60;
+        lp.type = 'lowpass'; lp.frequency.value = 200;
+        this.boostGain.gain.value = 0;
+        this.boostGain.gain.linearRampToValueAtTime(0.08, this.ctx.currentTime + 0.3);
+        this.boostOsc.connect(lp); lp.connect(this.boostGain); this.boostGain.connect(this.master);
+        this.boostOsc.start();
+    },
+    stopBoost() {
+        if (!this.boostOsc) return;
+        this.boostGain.gain.linearRampToValueAtTime(0, this.ctx.currentTime + 0.2);
+        const osc = this.boostOsc;
+        setTimeout(() => { try { osc.stop(); } catch(e){} }, 300);
+        this.boostOsc = null; this.boostGain = null;
+    }
+};
+
+// ============================================================
+// HUD UPDATES
+// ============================================================
+function updateHUD() {
+    document.getElementById('score-display').textContent = String(score).padStart(7, '0');
+    document.getElementById('shard-num').textContent = shardCount;
+    document.getElementById('boost-fill').style.width = (boostMeter * 100) + '%';
+    if (boostMeter < 0.1) document.getElementById('boost-fill').style.background = '#883333';
+    else document.getElementById('boost-fill').style.background = '#FFD166';
+
+    const shields = document.querySelectorAll('.shield');
+    shields.forEach((s, i) => { s.className = 'shield' + (i >= playerHP ? ' lost' : ''); });
+}
+
+function showSectionTitle(name) {
+    const el = document.getElementById('section-title');
+    el.textContent = name;
+    el.style.opacity = '1';
+    setTimeout(() => { el.style.opacity = '0'; }, 2500);
+}
+
+function checkSectionTitles() {
+    if (lastSectionShown < 0 && splineProgress >= 0.01 && splineProgress < 0.05) {
+        lastSectionShown = 0; showSectionTitle('THE COLONNADE');
+    } else if (lastSectionShown < 1 && splineProgress >= 0.38 && splineProgress < 0.42) {
+        lastSectionShown = 1; showSectionTitle('THE LABYRINTH');
+    } else if (lastSectionShown < 2 && splineProgress >= 0.73 && splineProgress < 0.77) {
+        lastSectionShown = 2; showSectionTitle('THE MONOLITH');
+    }
+}
+
+function updateActiveCardsDisplay() {
+    const container = document.getElementById('active-cards');
+    container.innerHTML = '';
+    const cards = [];
+    if (weaponState.firePattern !== 'default') cards.push(weaponState.firePattern);
+    if (weaponState.modifier) cards.push(weaponState.modifier);
+    for (const b of weaponState.buffs) cards.push(b);
+    for (const cid of cards) {
+        const card = CARD_DB[cid];
+        if (!card) continue;
+        const el = document.createElement('div');
+        el.className = 'active-card';
+        el.style.borderLeft = '3px solid ' + card.color;
+        el.innerHTML = `<svg viewBox="0 0 48 48">${card.icon}</svg>`;
+        container.appendChild(el);
+    }
+}
+
+// ============================================================
+// ENGINE TRAIL PARTICLES
+// ============================================================
+const engineTrails = [];
+function initEngineTrails() {
+    const geo = new THREE.SphereGeometry(0.15, 4, 2);
+    for (let i = 0; i < 30; i++) {
+        const p = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0xFF8C00, transparent: true, opacity: 0 }));
+        p.visible = false;
+        p.userData = { active: false, life: 0, maxLife: 0.3 };
+        scene.add(p);
+        engineTrails.push(p);
+    }
+}
+
+function updateEngineTrails(dt) {
+    if (gameState !== 'PLAYING') return;
+    const emitCount = (isBoosting && boostMeter > 0) ? 5 : 2;
+    let emitted = 0;
+    for (const p of engineTrails) {
+        if (!p.userData.active && emitted < emitCount) {
+            p.userData.active = true;
+            p.userData.life = 0;
+            p.userData.maxLife = (isBoosting && boostMeter > 0) ? 0.5 : 0.3;
+            p.position.copy(shipGroup.position);
+            // Offset to rear of ship
+            const tan = splineCurve.getTangentAt(Math.min(splineProgress, 0.999));
+            p.position.addScaledVector(tan, 1.5);
+            p.position.x += (Math.random() - 0.5) * 0.4;
+            p.position.y += (Math.random() - 0.5) * 0.3;
+            p.visible = true;
+            p.material.opacity = 0.8;
+            p.scale.setScalar(0.3);
+            emitted++;
+        }
+        if (p.userData.active) {
+            p.userData.life += dt;
+            const t = p.userData.life / p.userData.maxLife;
+            p.material.opacity = 0.8 * (1 - t);
+            p.scale.setScalar(0.3 * (1 - t * 0.7));
+            p.position.y += dt * 1.5;
+            if (t >= 1) { p.userData.active = false; p.visible = false; }
+        }
+    }
+}
+
+// ============================================================
+// AMBIENT DUST
+// ============================================================
+const dustParticles = [];
+function initDust() {
+    const geo = new THREE.SphereGeometry(0.05, 3, 2);
+    const mat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.15 });
+    for (let i = 0; i < 60; i++) {
+        const p = new THREE.Mesh(geo, mat.clone());
+        p.position.set((Math.random()-0.5)*80, (Math.random()-0.5)*40, (Math.random()-0.5)*80);
+        p.userData.vel = new THREE.Vector3((Math.random()-0.5)*0.5, (Math.random()-0.5)*0.3, (Math.random()-0.5)*0.5);
+        scene.add(p);
+        dustParticles.push(p);
+    }
+}
+
+function updateDust(dt) {
+    for (const p of dustParticles) {
+        p.position.addScaledVector(p.userData.vel, dt);
+        const d = p.position.distanceTo(camera.position);
+        if (d > 50) {
+            p.position.copy(camera.position);
+            p.position.x += (Math.random()-0.5) * 60;
+            p.position.y += (Math.random()-0.5) * 30;
+            p.position.z += (Math.random()-0.5) * 60;
+        }
+    }
+}
+
+// ============================================================
+// CAMERA JUICE
+// ============================================================
+let killShakeTimer = 0, killShakeIntensity = 0;
+
+function triggerKillShake(intensity, dur) {
+    killShakeTimer = dur;
+    killShakeIntensity = intensity;
+}
+
+function updateCameraJuice(dt) {
+    // Kill shake
+    if (killShakeTimer > 0) {
+        killShakeTimer -= dt;
+        const amt = killShakeIntensity * (killShakeTimer / 0.3);
+        camera.position.x += (Math.random() - 0.5) * amt;
+        camera.position.y += (Math.random() - 0.5) * amt;
+    }
+}
+
+// ============================================================
+// TITLE SCREEN
+// ============================================================
+function initTitleScreen() {
+    gameState = 'TITLE';
+    document.getElementById('title-screen').style.display = 'flex';
+    document.getElementById('hud').style.display = 'none';
+    document.getElementById('crosshair').style.display = 'none';
+
+    document.getElementById('title-screen').addEventListener('click', startGame, { once: true });
+}
+
+function startGame() {
+    if (!Audio.ctx) Audio.init();
+    Audio.startAmbient();
+
+    document.getElementById('title-screen').style.opacity = '0';
+    setTimeout(() => {
+        document.getElementById('title-screen').style.display = 'none';
+        document.getElementById('hud').style.display = 'block';
+        document.getElementById('crosshair').style.display = 'block';
+    }, 500);
+
+    gameState = 'PLAYING';
+    splineProgress = 0;
+    elapsedTime = 0;
+}
+
+// ============================================================
+// RESULTS SCREEN
+// ============================================================
+function showResultsScreen() {
+    gameState = 'RESULTS';
+    document.getElementById('hud').style.display = 'none';
+    document.getElementById('crosshair').style.display = 'none';
+
+    const rs = document.getElementById('results-screen');
+    rs.style.display = 'flex';
+
+    const mins = Math.floor(elapsedTime / 60);
+    const secs = Math.floor(elapsedTime % 60);
+    document.getElementById('res-score').textContent = score;
+    document.getElementById('res-kills').textContent = totalKills;
+    document.getElementById('res-shards').textContent = shardCount;
+    document.getElementById('res-time').textContent = String(mins).padStart(2, '0') + ':' + String(secs).padStart(2, '0');
+
+    // Show picked cards
+    const cardsEl = document.getElementById('res-cards');
+    cardsEl.innerHTML = '';
+    const pickedCards = [];
+    if (weaponState.firePattern !== 'default') pickedCards.push(weaponState.firePattern);
+    if (weaponState.modifier) pickedCards.push(weaponState.modifier);
+    for (const b of weaponState.buffs) pickedCards.push(b);
+    for (const cid of pickedCards) {
+        const c = CARD_DB[cid];
+        if (c) cardsEl.innerHTML += `<span style="color:${c.color}">${c.name}</span> `;
+    }
+
+    // Stagger animations
+    setTimeout(() => rs.querySelector('h1').style.opacity = '1', 200);
+    const rows = rs.querySelectorAll('.result-row');
+    rows.forEach((r, i) => setTimeout(() => r.style.opacity = '1', 500 + i * 300));
+    setTimeout(() => document.getElementById('play-again').style.opacity = '1', 500 + rows.length * 300 + 200);
+
+    document.getElementById('play-again').addEventListener('click', restartGame, { once: true });
+}
+
+function restartGame() {
+    // Reset all state
+    score = 0; shardCount = 0; totalKills = 0; playerHP = COMBAT.PLAYER_HP;
+    splineProgress = 0; elapsedTime = 0; boostMeter = 1; lastSectionShown = -1;
+    cardPickNumber = 0; levelEnding = false; levelEndTimer = 0; bossDefeated = false;
+    bossState.active = false; bossState.dying = false;
+    if (boss) boss.visible = false;
+    closingWallsTriggered = false; bridgeCrumbleTriggered = false;
+    triggeredSpawns = new Set();
+    weaponState.firePattern = 'default'; weaponState.modifier = null; weaponState.buffs = [];
+    FLIGHT.BOOST_MULTIPLIER = 1.5; FLIGHT.BOOST_RECHARGE_TIME = 3.0;
+    COMBAT.SHARD_COLLECT_RADIUS = 3;
+    shuffledFire = shuffleArray(FIRE_PATTERNS);
+    shuffledMod = shuffleArray(MODIFIERS);
+    shuffledBuff = shuffleArray(SHIP_BUFFS);
+
+    // Deactivate all pools
+    [...playerProjectiles, ...enemyProjectiles, ...shards, ...fragments, ...shatterFrags].forEach(o => { o.userData.active = false; o.visible = false; });
+    [...drones, ...formationFlyers].forEach(o => { o.userData.active = false; o.visible = false; });
+    turrets.forEach(o => { o.userData.active = false; o.visible = false; });
+
+    // Restore fog
+    scene.fog.near = 80; scene.fog.far = 450; scene.fog.color.set(COLORS.FOG);
+
+    // Hide results, show game
+    document.getElementById('results-screen').style.display = 'none';
+    document.getElementById('results-screen').querySelector('h1').style.opacity = '0';
+    document.querySelectorAll('.result-row').forEach(r => r.style.opacity = '0');
+    document.getElementById('play-again').style.opacity = '0';
+    // Clean up run-complete if exists
+    const rc = document.getElementById('run-complete');
+    if (rc) rc.remove();
+
+    document.getElementById('hud').style.display = 'block';
+    document.getElementById('crosshair').style.display = 'block';
+    document.getElementById('active-cards').innerHTML = '';
+    document.getElementById('boss-hp-bar').style.display = 'none';
+    document.getElementById('game-over').style.display = 'none';
+    updateHUD();
+
+    gameState = 'PLAYING';
+}
+
 // DEBUG TOGGLE
 // ============================================================
 window.addEventListener('keydown', (e) => {
@@ -3448,22 +3942,46 @@ function animate() {
 
     elapsedTime += dt;
 
-    if (gameState === 'PLAYING') {
+    if (gameState === 'TITLE') {
+        // Orbit camera around ship
+        titleOrbitAngle += dt * 0.3;
+        const startPt = splineCurve.getPointAt(0);
+        camera.position.set(
+            startPt.x + Math.cos(titleOrbitAngle) * 12,
+            startPt.y + 4 + Math.sin(titleOrbitAngle * 0.3) * 2,
+            startPt.z + Math.sin(titleOrbitAngle) * 12
+        );
+        camera.lookAt(startPt);
+        shipGroup.position.copy(startPt);
+        shipGroup.rotation.y = titleOrbitAngle * 0.2;
+        updateDust(dt);
+    } else if (gameState === 'PLAYING') {
         processInput(dt);
         updateShip(dt);
         updateCamera(dt);
         updateSpeedLines(dt);
         updateCombat(dt);
         updateArchCulling();
+        updateEngineTrails(dt);
+        updateDust(dt);
+        updateCameraJuice(dt);
+        updateHUD();
+        checkSectionTitles();
+        Audio.updateAmbient(dt);
+        // Boost audio
+        if (isBoosting && boostMeter > 0 && !Audio.boostOsc) Audio.startBoost();
+        else if ((!isBoosting || boostMeter <= 0) && Audio.boostOsc) Audio.stopBoost();
     } else if (gameState === 'CARD_PICK') {
-        // Slow drift along spline
         splineProgress += (5 * dt) / splineLength;
         const splinePoint = splineCurve.getPointAt(Math.min(splineProgress, 0.999));
-        const tangent = splineCurve.getTangentAt(Math.min(splineProgress, 0.999));
         shipGroup.position.lerp(splinePoint, 0.02);
         updateCamera(dt);
         updateVoidZone(dt);
         updateArchCulling();
+        updateDust(dt);
+        Audio.updateAmbient(dt);
+    } else if (gameState === 'RESULTS') {
+        updateDust(dt);
     }
 
     renderer.render(scene, camera);
@@ -3486,13 +4004,20 @@ function init() {
     initCardSystem();
     initInput();
 
+    initEngineTrails();
+    initDust();
     window.addEventListener('resize', onResize);
+
+    // Mute toggle
+    window.addEventListener('keydown', (e) => { if (e.code === 'KeyM') Audio.toggleMute(); });
+    document.getElementById('mute-btn').addEventListener('click', () => Audio.toggleMute());
 
     // Position camera initially
     const startPoint = splineCurve.getPointAt(0);
     camera.position.copy(startPoint).add(new THREE.Vector3(0, CAM.ABOVE, CAM.BEHIND));
     camera.lookAt(startPoint);
 
+    initTitleScreen();
     animate();
 }
 
