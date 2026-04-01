@@ -3286,8 +3286,9 @@ function updateVoidZone(dt) {
     if (gameState === 'CARD_PICK') {
         voidZoneTimer += dt;
         const t = Math.min(voidZoneTimer / 1, 1);
-        scene.fog.near = savedFogNear - t * (savedFogNear - 5);
-        scene.fog.far = savedFogFar - t * (savedFogFar - 60);
+        // Don't push fog too far - keep sky visible
+        scene.fog.near = savedFogNear - t * (savedFogNear - 20);
+        scene.fog.far = savedFogFar - t * (savedFogFar - 120);
 
         // Void particles
         for (const vp of voidParticles) {
@@ -3302,11 +3303,13 @@ function updateVoidZone(dt) {
             vp.material.opacity = 0.2 + Math.sin(elapsedTime * 2 + vp.position.x) * 0.15;
         }
     } else if (!voidZoneActive && scene.fog.near < 75) {
-        // Restore fog
-        scene.fog.near += dt * 60;
-        scene.fog.far += dt * 300;
+        // Restore fog quickly
+        scene.fog.near += dt * 120;
+        scene.fog.far += dt * 600;
         if (scene.fog.near >= savedFogNear) scene.fog.near = savedFogNear;
         if (scene.fog.far >= savedFogFar) scene.fog.far = savedFogFar;
+        // Reset fog color to horizon
+        scene.fog.color.set(COLORS.FOG);
         // Hide particles
         for (const vp of voidParticles) vp.visible = false;
     }
