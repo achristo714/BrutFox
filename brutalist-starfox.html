@@ -185,7 +185,7 @@ canvas { display: block; }
 // ============================================================
 const COLORS = {
     SKY_TOP: 0x1A535C,
-    SKY_HORIZON: 0xFFB4A2,
+    SKY_HORIZON: 0xE8C8A0,
     CONCRETE: 0xC4A882,
     COOL_CONCRETE: 0x8B8D8E,
     DUSTY_ROSE: 0xC48A7A,
@@ -198,7 +198,7 @@ const COLORS = {
     SHIP_ACCENT: 0xE07A5F,
     LIGHT_WARM: 0xFFD699,
     LIGHT_AMBIENT: 0x6B5B95,
-    FOG: 0xFFB4A2,
+    FOG: 0xD4BFA8,
     LASER: 0xFFD166,
     CURRENCY: 0xFFBE0B
 };
@@ -551,7 +551,7 @@ function createSkybox() {
 function createGround() {
     const groundGeo = new THREE.PlaneGeometry(2000, 2000);
     const groundMat = new THREE.MeshLambertMaterial({
-        color: COLORS.CONCRETE,
+        color: 0x3D5A3A,
         flatShading: true
     });
     const ground = new THREE.Mesh(groundGeo, groundMat);
@@ -1322,12 +1322,13 @@ function buildColonnade() {
         const frame = getSplineFrame(t);
         const groundY = -18;
 
-        // --- Pillars on both sides ---
+        // --- Pillars on both sides (varied colors) ---
         for (const side of [-1, 1]) {
             const dist = 14 + rng() * 4;
             const height = 35 + rng() * 20;
             const pillarGeo = new THREE.BoxGeometry(2, height, 2);
-            const pillar = new THREE.Mesh(pillarGeo, ARCH_MATS.warmConcrete);
+            const pillarMats = [ARCH_MATS.warmConcrete, ARCH_MATS.dustyRose, ARCH_MATS.sage];
+            const pillar = new THREE.Mesh(pillarGeo, pillarMats[Math.floor(rng() * pillarMats.length)]);
             pillar.position.copy(frame.pos);
             pillar.position.addScaledVector(frame.right, side * dist);
             pillar.position.y = groundY + height / 2;
@@ -1397,13 +1398,14 @@ function buildColonnade() {
         }
     }
 
-    // --- Green ground overlay for Section 1 ---
+    // --- Lush green ground for Section 1 ---
     const poolStart = getSplineFrame(sec.start + 0.02);
     const poolEnd = getSplineFrame(sec.end - 0.02);
     const poolLength = poolStart.pos.distanceTo(poolEnd.pos);
     const poolMid = new THREE.Vector3().lerpVectors(poolStart.pos, poolEnd.pos, 0.5);
-    const grassMat = new THREE.MeshLambertMaterial({ color: 0x5A7A4A, flatShading: true });
-    const grassGeo = new THREE.PlaneGeometry(60, poolLength);
+    // Wide bright green carpet
+    const grassMat = new THREE.MeshLambertMaterial({ color: 0x4A8A3A, flatShading: true });
+    const grassGeo = new THREE.PlaneGeometry(200, poolLength + 80);
     const grass = new THREE.Mesh(grassGeo, grassMat);
     grass.rotation.x = -Math.PI / 2;
     grass.position.copy(poolMid);
@@ -1413,7 +1415,44 @@ function buildColonnade() {
     grass.receiveShadow = true;
     archGroup.add(grass);
     archObjects.push(grass);
-    // Reflecting pool on top
+
+    // Vegetation - small tree-like shapes along the colonnade
+    const treeGeo = new THREE.ConeGeometry(1.5, 5, 5);
+    const treeMat = new THREE.MeshLambertMaterial({ color: 0x2D6B2D, flatShading: true });
+    const trunkGeo = new THREE.CylinderGeometry(0.3, 0.4, 2, 4);
+    const trunkMat = new THREE.MeshLambertMaterial({ color: 0x5C3D2E, flatShading: true });
+    const bushGeo = new THREE.DodecahedronGeometry(1.2, 0);
+    const bushMat = new THREE.MeshLambertMaterial({ color: 0x3A7A3A, flatShading: true });
+    const bushMat2 = new THREE.MeshLambertMaterial({ color: 0x5A9A4A, flatShading: true });
+    for (let i = 0; i < 40; i++) {
+        const t = sec.start + (i / 40) * (sec.end - sec.start);
+        const frame = getSplineFrame(t);
+        for (const side of [-1, 1]) {
+            if (rng() > 0.5) continue;
+            const dist = 25 + rng() * 30;
+            const pos = frame.pos.clone().addScaledVector(frame.right, side * dist);
+            pos.y = -18;
+            if (rng() > 0.4) {
+                // Tree
+                const trunk = new THREE.Mesh(trunkGeo, trunkMat);
+                trunk.position.copy(pos); trunk.position.y += 1;
+                archGroup.add(trunk); archObjects.push(trunk);
+                const crown = new THREE.Mesh(treeGeo, rng() > 0.5 ? treeMat : bushMat);
+                crown.position.copy(pos); crown.position.y += 5 + rng() * 2;
+                crown.scale.setScalar(0.8 + rng() * 0.6);
+                archGroup.add(crown); archObjects.push(crown);
+            } else {
+                // Bush
+                const bush = new THREE.Mesh(bushGeo, rng() > 0.5 ? bushMat : bushMat2);
+                bush.position.copy(pos); bush.position.y += 0.8;
+                bush.scale.setScalar(0.6 + rng() * 0.8);
+                bush.rotation.y = rng() * Math.PI;
+                archGroup.add(bush); archObjects.push(bush);
+            }
+        }
+    }
+
+    // Reflecting pool on top of the green
     const poolGeo = new THREE.PlaneGeometry(16, poolLength * 0.6);
     const pool = new THREE.Mesh(poolGeo, ARCH_MATS.pool);
     pool.rotation.x = -Math.PI / 2;
@@ -1557,6 +1596,35 @@ function buildLabyrinth() {
         }
     }
 
+    // --- Dark moss ground for Labyrinth ---
+    const labStart = getSplineFrame(sec.start + 0.01);
+    const labEnd = getSplineFrame(sec.end - 0.01);
+    const labLength = labStart.pos.distanceTo(labEnd.pos);
+    const labMid = new THREE.Vector3().lerpVectors(labStart.pos, labEnd.pos, 0.5);
+    const mossMat = new THREE.MeshLambertMaterial({ color: 0x2E4A35, flatShading: true });
+    const mossGeo = new THREE.PlaneGeometry(150, labLength + 60);
+    const moss = new THREE.Mesh(mossGeo, mossMat);
+    moss.rotation.x = -Math.PI / 2;
+    moss.position.copy(labMid); moss.position.y = -17.9;
+    moss.lookAt(labEnd.pos.x, -17.9, labEnd.pos.z);
+    moss.rotation.x = -Math.PI / 2;
+    moss.receiveShadow = true;
+    archGroup.add(moss); archObjects.push(moss);
+
+    // Scattered moss patches and low bushes
+    const labBushGeo = new THREE.DodecahedronGeometry(0.8, 0);
+    const labBushMat = new THREE.MeshLambertMaterial({ color: 0x2A5A2A, flatShading: true });
+    for (let i = 0; i < 25; i++) {
+        const t = sec.start + (i / 25) * (sec.end - sec.start);
+        const frame = getSplineFrame(t);
+        if (rng() > 0.6) continue;
+        const side = rng() > 0.5 ? 1 : -1;
+        const bush = new THREE.Mesh(labBushGeo, labBushMat);
+        bush.position.copy(frame.pos).addScaledVector(frame.right, side * (15 + rng() * 20));
+        bush.position.y = -17.5; bush.scale.setScalar(0.5 + rng() * 0.7);
+        archGroup.add(bush); archObjects.push(bush);
+    }
+
     // --- Bridge set piece ---
     const bridgeT = (sec.start + sec.end) / 2;
     const bridgeFrame = getSplineFrame(bridgeT);
@@ -1684,6 +1752,21 @@ function buildMonolith() {
             addArch(panel);
         }
     }
+
+    // --- Sandy warm ground for Monolith arena ---
+    const monoStart = getSplineFrame(sec.start + 0.01);
+    const monoEnd = getSplineFrame(sec.end - 0.01);
+    const monoLength = monoStart.pos.distanceTo(monoEnd.pos);
+    const monoMid2 = new THREE.Vector3().lerpVectors(monoStart.pos, monoEnd.pos, 0.5);
+    const arenaFloorMat = new THREE.MeshLambertMaterial({ color: 0x8A7A5A, flatShading: true });
+    const arenaFloorGeo = new THREE.PlaneGeometry(200, monoLength + 80);
+    const arenaFloor = new THREE.Mesh(arenaFloorGeo, arenaFloorMat);
+    arenaFloor.rotation.x = -Math.PI / 2;
+    arenaFloor.position.copy(monoMid2); arenaFloor.position.y = -17.9;
+    arenaFloor.lookAt(monoEnd.pos.x, -17.9, monoEnd.pos.z);
+    arenaFloor.rotation.x = -Math.PI / 2;
+    arenaFloor.receiveShadow = true;
+    archGroup.add(arenaFloor); archObjects.push(arenaFloor);
 
     // --- Arena floor grid ---
     const gridSize = 100;
