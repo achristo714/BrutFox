@@ -917,7 +917,6 @@ function initTouchControls() {
             knob.style.top = (touchJoystickCenter.y + ny - 20) + 'px';
             input.mouseNormX = nx / maxDist;
             input.mouseNormY = -(ny / maxDist);
-            aimNDC.set(input.mouseNormX * 0.4, input.mouseNormY * 0.4);
         }
     }, { passive: false });
 
@@ -932,19 +931,11 @@ function initTouchControls() {
         }
     }, { passive: false });
 
-    // === RIGHT SIDE: Tap anywhere to fire, drag to aim ===
+    // === RIGHT SIDE: Tap anywhere to fire ===
     const fireZone = document.getElementById('touch-fire-zone');
     fireZone.addEventListener('touchstart', (e) => {
         e.preventDefault();
         if (!autoFireEnabled) { isFireHeld = true; }
-    }, { passive: false });
-    fireZone.addEventListener('touchmove', (e) => {
-        e.preventDefault();
-        // Drag on right side adjusts aim
-        const touch = e.changedTouches[0];
-        const nx = (touch.clientX / window.innerWidth) * 2 - 1;
-        const ny = -((touch.clientY / window.innerHeight) * 2 - 1);
-        aimNDC.set(nx * 0.6, ny * 0.6);
     }, { passive: false });
     fireZone.addEventListener('touchend', (e) => {
         if (!autoFireEnabled) { isFireHeld = false; }
@@ -3244,16 +3235,20 @@ function updateEndOfLevel(dt) {
 // ============================================================
 function updateCrosshair() {
     const crosshairEl = document.getElementById('crosshair');
-    const mx = (input.mouseNormX + 1) * 0.5 * window.innerWidth;
-    const my = (1 - (input.mouseNormY + 1) * 0.5) * window.innerHeight;
-    crosshairEl.style.left = mx + 'px';
-    crosshairEl.style.top = my + 'px';
 
-    // Update aim NDC
-    aimNDC.set(input.mouseNormX, input.mouseNormY);
+    // Project a point ahead of the ship onto the screen for the crosshair
+    const aimTarget = shipGroup.position.clone().addScaledVector(
+        splineCurve.getTangentAt(Math.min(splineProgress, 0.999)), -30
+    );
+    const projected = aimTarget.clone().project(camera);
+    const cx = (projected.x + 1) * 0.5 * window.innerWidth;
+    const cy = (-projected.y + 1) * 0.5 * window.innerHeight;
+    crosshairEl.style.left = cx + 'px';
+    crosshairEl.style.top = cy + 'px';
 
-    // Check if aiming at any enemy
-    aimRaycaster.setFromCamera(aimNDC, camera);
+    // Raycaster from ship forward for hostile detection
+    const shipFwd = splineCurve.getTangentAt(Math.min(splineProgress, 0.999)).normalize();
+    aimRaycaster.set(shipGroup.position, shipFwd);
     let hostile = false;
     for (const d of drones) {
         if (!d.userData.active) continue;
@@ -3672,8 +3667,8 @@ function exitCardPick() {
 // ============================================================
 function fireWeapon() {
     Audio.playerFire();
-    aimRaycaster.setFromCamera(aimNDC, camera);
-    const baseDir = aimRaycaster.ray.direction.clone().normalize();
+    // Bullets fire straight ahead from the ship's facing direction
+    const baseDir = splineCurve.getTangentAt(Math.min(splineProgress, 0.999)).clone().normalize();
 
     const fp = weaponState.firePattern;
 
