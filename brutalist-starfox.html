@@ -129,7 +129,7 @@ const FLIGHT = {
 };
 
 const CONTROLS = {
-    LERP_FACTOR: 0.08,
+    LERP_FACTOR: 0.18,
     BANK_ANGLE: Math.PI / 12,
     ROLL_DURATION: 0.4,
     ROLL_COOLDOWN: 1.5,
@@ -144,8 +144,8 @@ const CAM = {
 };
 
 const BOUNDS = {
-    MOVE_X: 12,
-    MOVE_Y: 8
+    MOVE_X: 18,
+    MOVE_Y: 12
 };
 
 // ============================================================
@@ -211,7 +211,7 @@ const COMBAT = {
     PLAYER_HITBOX: 1.2,
     PLAYER_HP: 3,
     INVULN_TIME: 0.5,
-    SHARD_COLLECT_RADIUS: 3,
+    SHARD_COLLECT_RADIUS: 5,
     SHARD_POOL_SIZE: 40,
     FRAGMENT_POOL_SIZE: 80,
     // Formation flyers
@@ -890,7 +890,7 @@ function updateShip(dt) {
     }
 
     // Slerp ship quaternion toward target for smooth rotation
-    shipGroup.quaternion.slerp(_targetQuat, 0.08);
+    shipGroup.quaternion.slerp(_targetQuat, 0.12);
 
     // Barrel roll - applied on top of smooth rotation
     if (barrelRoll.active) {
@@ -1821,7 +1821,7 @@ function processSpawns() {
                 else if (ev.side === 'right') baseOffset.copy(frame.right).multiplyScalar(15);
                 else baseOffset.copy(frame.tan).multiplyScalar(30);
                 // Position ahead of player
-                const spawnPos = frame.pos.clone().add(baseOffset).addScaledVector(frame.tan, -40);
+                const spawnPos = frame.pos.clone().add(baseOffset).addScaledVector(frame.tan, 50);
 
                 for (const off of offsets) {
                     const pos = spawnPos.clone()
@@ -1838,7 +1838,7 @@ function processSpawns() {
                     for (const s of sides) {
                         const pos = tFrame.pos.clone()
                             .addScaledVector(tFrame.right, s * wallDist)
-                            .addScaledVector(tFrame.tan, -30);
+                            .addScaledVector(tFrame.tan, 40);
                         pos.y = tFrame.pos.y + 2;
                         spawnTurret(pos);
                     }
@@ -1858,7 +1858,7 @@ function spawnFormationGroup(frame, ev) {
     if (ev.side === 'left') baseOffset.copy(frame.right).multiplyScalar(-15);
     else if (ev.side === 'right') baseOffset.copy(frame.right).multiplyScalar(15);
     else baseOffset.copy(frame.tan).multiplyScalar(30);
-    const spawnPos = frame.pos.clone().add(baseOffset).addScaledVector(frame.tan, -40);
+    const spawnPos = frame.pos.clone().add(baseOffset).addScaledVector(frame.tan, 50);
 
     const group = {
         id: formationGroups.length,
@@ -2011,11 +2011,12 @@ function updateDrones(dt) {
         d.position.x = d.userData.basePos.x + driftX;
         d.position.y = d.userData.basePos.y + driftY;
 
-        // Drift slowly toward player along z
-        const toShip = shipGroup.position.z - d.position.z;
-        if (Math.abs(toShip) > 5) {
-            d.position.z += Math.sign(toShip) * dt * 8;
-            d.userData.basePos.z += Math.sign(toShip) * dt * 8;
+        // Drift toward player in 3D
+        const toShip3D = new THREE.Vector3().subVectors(shipGroup.position, d.userData.basePos);
+        const distToShip = toShip3D.length();
+        if (distToShip > 5) {
+            toShip3D.normalize().multiplyScalar(dt * 10);
+            d.userData.basePos.add(toShip3D);
         }
 
         // Flash timer
@@ -2380,8 +2381,16 @@ function updateShards(dt) {
         s.position.y += Math.sin(s.userData.age * 3) * dt * 0.5;
         s.rotation.y += dt * 2;
 
+        // Always drift toward player
+        const toPlayer = new THREE.Vector3().subVectors(shipGroup.position, s.position);
+        const distToPlayer = toPlayer.length();
+        if (distToPlayer < 25 && distToPlayer > 0.5) {
+            toPlayer.normalize().multiplyScalar(dt * (distToPlayer < 8 ? 15 : 5));
+            s.position.add(toPlayer);
+        }
+
         // Auto-collect
-        if (s.position.distanceTo(shipGroup.position) < COMBAT.SHARD_COLLECT_RADIUS) {
+        if (distToPlayer < COMBAT.SHARD_COLLECT_RADIUS) {
             s.userData.active = false;
             s.visible = false;
             shardCount++;
@@ -3505,7 +3514,7 @@ const Audio = {
     init() {
         this.ctx = new (window.AudioContext || window.webkitAudioContext)();
         this.master = this.ctx.createGain();
-        this.master.gain.value = 0.7;
+        this.master.gain.value = 0.35;
         this.master.connect(this.ctx.destination);
     },
 
@@ -3555,24 +3564,24 @@ const Audio = {
         g.connect(this.master); src.start();
     },
 
-    playerFire() { this.playTone(880, 440, 'square', 0.15, 0.08); },
-    enemyFire() { this.playTone(220, 220, 'triangle', 0.1, 0.15); },
-    enemyHit() { this.playNoise(0.2, 0.1, 2000, 5); },
-    enemyDeath() { this.playNoise(0.15, 0.2, 1500); this.playTone(330, 110, 'sine', 0.1, 0.3); },
-    playerHit() { this.playTone(80, 80, 'sine', 0.25, 0.4); this.playTone(1200, 1200, 'square', 0.15, 0.1); },
-    barrelRollSfx() { this.playNoise(0.1, 0.4, 500); },
-    shardCollect() { this.playTone(440, 880, 'sine', 0.1, 0.15); },
+    playerFire() { this.playTone(880, 440, 'square', 0.06, 0.05); },
+    enemyFire() { this.playTone(220, 220, 'triangle', 0.04, 0.12); },
+    enemyHit() { this.playNoise(0.08, 0.06, 2000, 5); },
+    enemyDeath() { this.playNoise(0.06, 0.15, 1500); this.playTone(330, 110, 'sine', 0.05, 0.2); },
+    playerHit() { this.playTone(80, 80, 'sine', 0.12, 0.3); this.playTone(1200, 1200, 'square', 0.06, 0.08); },
+    barrelRollSfx() { this.playNoise(0.05, 0.3, 500); },
+    shardCollect() { this.playTone(660, 1200, 'sine', 0.04, 0.1); },
     cardAppear() {
-        this.playTone(330, 330, 'sine', 0.08, 0.8);
-        this.playTone(440, 440, 'sine', 0.08, 0.8);
-        this.playTone(550, 550, 'sine', 0.06, 0.8);
+        this.playTone(330, 330, 'sine', 0.03, 0.6);
+        this.playTone(440, 440, 'sine', 0.03, 0.6);
+        this.playTone(550, 550, 'sine', 0.02, 0.6);
     },
-    cardSelect() { this.playTone(440, 440, 'sine', 0.1, 0.5); this.playTone(660, 660, 'sine', 0.08, 0.5); },
+    cardSelect() { this.playTone(440, 440, 'sine', 0.05, 0.4); this.playTone(660, 660, 'sine', 0.04, 0.4); },
     bossDeathSfx() {
-        this.playNoise(0.25, 0.3, 800);
-        setTimeout(() => this.playNoise(0.15, 0.5, 600), 300);
-        setTimeout(() => this.playNoise(0.1, 1.0, 400), 800);
-        this.playTone(55, 55, 'sine', 0.15, 2);
+        this.playNoise(0.12, 0.3, 800);
+        setTimeout(() => this.playNoise(0.08, 0.5, 600), 300);
+        setTimeout(() => this.playNoise(0.05, 1.0, 400), 800);
+        this.playTone(55, 55, 'sine', 0.08, 2);
     },
 
     // Ambient layers
@@ -3582,7 +3591,7 @@ const Audio = {
         const drone = this.ctx.createOscillator();
         this.droneGain = this.ctx.createGain();
         drone.type = 'sine'; drone.frequency.value = 55;
-        this.droneGain.gain.value = 0.05;
+        this.droneGain.gain.value = 0.02;
         drone.connect(this.droneGain); this.droneGain.connect(this.master);
         drone.start();
 
@@ -3591,8 +3600,8 @@ const Audio = {
         this.padFilter = this.ctx.createBiquadFilter();
         this.padGain = this.ctx.createGain();
         this.padOsc.type = 'sawtooth'; this.padOsc.frequency.value = 220;
-        this.padFilter.type = 'lowpass'; this.padFilter.frequency.value = 400; this.padFilter.Q.value = 2;
-        this.padGain.gain.value = 0.04;
+        this.padFilter.type = 'lowpass'; this.padFilter.frequency.value = 300; this.padFilter.Q.value = 1;
+        this.padGain.gain.value = 0.015;
         this.padOsc.connect(this.padFilter); this.padFilter.connect(this.padGain); this.padGain.connect(this.master);
         this.padOsc.start();
 
@@ -3615,7 +3624,7 @@ const Audio = {
             const osc = this.ctx.createOscillator();
             const g = this.ctx.createGain();
             osc.type = 'sine'; osc.frequency.value = freq;
-            g.gain.setValueAtTime(0.025, this.ctx.currentTime);
+            g.gain.setValueAtTime(0.012, this.ctx.currentTime);
             g.gain.linearRampToValueAtTime(0, this.ctx.currentTime + 1.5);
             const pan = this.ctx.createStereoPanner();
             pan.pan.value = Math.random() * 2 - 1;
@@ -3631,15 +3640,15 @@ const Audio = {
     setCardPickMode(active) {
         if (!this.ctx) return;
         const t = this.ctx.currentTime;
-        if (this.droneGain) this.droneGain.gain.linearRampToValueAtTime(active ? 0 : 0.05, t + 1);
-        if (this.padGain) this.padGain.gain.linearRampToValueAtTime(active ? 0.02 : 0.04, t + 1);
+        if (this.droneGain) this.droneGain.gain.linearRampToValueAtTime(active ? 0 : 0.02, t + 1);
+        if (this.padGain) this.padGain.gain.linearRampToValueAtTime(active ? 0.005 : 0.015, t + 1);
     },
 
     startBossMusic() {
         if (!this.ctx || this.bossKickInterval) return;
         this.bossKickInterval = setInterval(() => {
             if (this.muted) return;
-            this.playTone(80, 40, 'sine', 0.08, 0.1);
+            this.playTone(80, 40, 'sine', 0.04, 0.1);
         }, 600);
     },
 
@@ -3655,7 +3664,7 @@ const Audio = {
         this.boostOsc.type = 'sawtooth'; this.boostOsc.frequency.value = 60;
         lp.type = 'lowpass'; lp.frequency.value = 200;
         this.boostGain.gain.value = 0;
-        this.boostGain.gain.linearRampToValueAtTime(0.08, this.ctx.currentTime + 0.3);
+        this.boostGain.gain.linearRampToValueAtTime(0.03, this.ctx.currentTime + 0.3);
         this.boostOsc.connect(lp); lp.connect(this.boostGain); this.boostGain.connect(this.master);
         this.boostOsc.start();
     },
