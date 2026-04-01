@@ -149,7 +149,24 @@ const COMBAT = {
     INVULN_TIME: 0.5,
     SHARD_COLLECT_RADIUS: 3,
     SHARD_POOL_SIZE: 40,
-    FRAGMENT_POOL_SIZE: 80
+    FRAGMENT_POOL_SIZE: 80,
+    // Formation flyers
+    FLYER_HP: 1,
+    FLYER_HITBOX: 0.9,
+    FLYER_POOL_SIZE: 24,
+    FLYER_SCATTER_TIME: 2.0,
+    // Miniboss
+    BOSS_HP: 30,
+    BOSS_HITBOX: 5,
+    BOSS_ORBIT_SPEED: 0.3,
+    BOSS_ORBIT_RADIUS: 45,
+    BOSS_BURST_INTERVAL_P1: 3,
+    BOSS_BURST_INTERVAL_P2: 2,
+    BOSS_DRONE_INTERVAL_P1: 5,
+    BOSS_DRONE_INTERVAL_P2: 5,
+    BOSS_BEAM_INTERVAL: 6,
+    BOSS_BEAM_DURATION: 2,
+    BOSS_BEAM_LENGTH: 30
 };
 
 let playerHP = COMBAT.PLAYER_HP;
@@ -168,8 +185,36 @@ const playerProjectiles = [];
 const enemyProjectiles = [];
 const drones = [];
 const turrets = [];
+const formationFlyers = [];
 const shards = [];
 const fragments = [];
+
+// Formation groups tracking
+const formationGroups = []; // { members: [], center: Vector3, scattered: bool, scatterTimer: 0 }
+
+// Miniboss state
+let boss = null;
+let bossState = {
+    active: false, hp: 0, maxHp: 30,
+    orbitAngle: 0, orbitCenter: new THREE.Vector3(),
+    burstTimer: 0, droneTimer: 0, beamTimer: 0,
+    beamActive: false, beamAngle: 0, beamMesh: null,
+    phase: 1, dying: false, deathTimer: 0,
+    thresholds: { t75: false, t50: false, t25: false },
+    spikes: [], glowPanels: []
+};
+
+// Set piece state
+let closingWallsTriggered = false;
+let closingWallsTimer = 0;
+let closingWallSlabs = []; // references to the gap wall meshes
+let bridgeCrumbleTriggered = false;
+let bridgeFragments = [];
+
+// End of level
+let levelEnding = false;
+let levelEndTimer = 0;
+let bossDefeated = false;
 
 // Raycaster for aiming
 const aimRaycaster = new THREE.Raycaster();
@@ -188,6 +233,11 @@ const _tempVec2 = new THREE.Vector3();
 const _tempVec3 = new THREE.Vector3();
 const _slVec = new THREE.Vector3(); // dedicated for speed lines
 const _worldUp = new THREE.Vector3(0, 1, 0);
+const _targetQuat = new THREE.Quaternion();
+const _bankQuat = new THREE.Quaternion();
+const _bankAxis = new THREE.Vector3(0, 0, 1);
+let smoothBankAngle = 0;
+let smoothBoostPitch = 0;
 
 // ============================================================
 // INITIALIZATION
@@ -626,8 +676,8 @@ function updateShip(dt) {
 
     // Advance along spline
     splineProgress += (currentSpeed * dt) / splineLength;
-    if (splineProgress >= 1.0) {
-        splineProgress = 0; // Loop for now
+    if (splineProgress >= 0.999) {
+        splineProgress = 0.999; // Clamp at end (end-of-level handles transition)
     }
 
     // Get spline position and tangent
@@ -650,31 +700,39 @@ function updateShip(dt) {
     shipGroup.position.addScaledVector(right, shipOffset.x);
     shipGroup.position.addScaledVector(up, shipOffset.y + hoverOffset);
 
-    // Orientation - look along tangent
+    // Orientation - smooth quaternion-based rotation
+    // Compute target quaternion from tangent direction
     const lookTarget = _tempVec3.copy(shipGroup.position).addScaledVector(tangent, 10);
-    shipGroup.lookAt(lookTarget);
+    const lookMat = new THREE.Matrix4().lookAt(shipGroup.position, lookTarget, up);
+    _targetQuat.setFromRotationMatrix(lookMat);
 
-    // Visual banking based on lateral offset velocity
+    // Smooth banking - lerp toward target bank angle
     const lateralDelta = targetOffset.x - shipOffset.x;
-    const bankAngle = THREE.MathUtils.clamp(
-        lateralDelta * 0.3,
-        -CONTROLS.BANK_ANGLE,
-        CONTROLS.BANK_ANGLE
-    );
-    shipGroup.rotation.z += bankAngle;
+    const targetBankAngle = THREE.MathUtils.clamp(lateralDelta * 0.3, -CONTROLS.BANK_ANGLE, CONTROLS.BANK_ANGLE);
+    smoothBankAngle += (targetBankAngle - smoothBankAngle) * 0.06;
 
-    // Pitch down when boosting
-    if (isBoosting && boostMeter > 0) {
-        shipGroup.rotation.x += 0.08;
+    // Smooth boost pitch
+    const targetBoostPitch = (isBoosting && boostMeter > 0) ? 0.08 : 0;
+    smoothBoostPitch += (targetBoostPitch - smoothBoostPitch) * 0.05;
+
+    // Apply bank and pitch to the target quaternion
+    _bankQuat.setFromAxisAngle(_bankAxis, smoothBankAngle);
+    _targetQuat.multiply(_bankQuat);
+    if (Math.abs(smoothBoostPitch) > 0.001) {
+        const pitchQuat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1,0,0), smoothBoostPitch);
+        _targetQuat.multiply(pitchQuat);
     }
 
-    // Barrel roll - apply full rotation based on progress fraction
+    // Slerp ship quaternion toward target for smooth rotation
+    shipGroup.quaternion.slerp(_targetQuat, 0.08);
+
+    // Barrel roll - applied on top of smooth rotation
     if (barrelRoll.active) {
         barrelRoll.progress += dt;
         const t = Math.min(barrelRoll.progress / CONTROLS.ROLL_DURATION, 1.0);
-        // Eased roll using smoothstep-like curve
         const eased = t * t * (3 - 2 * t);
-        shipGroup.rotation.z += eased * Math.PI * 2 * barrelRoll.direction;
+        const rollQuat = new THREE.Quaternion().setFromAxisAngle(_bankAxis, eased * Math.PI * 2 * barrelRoll.direction);
+        shipGroup.quaternion.multiply(rollQuat);
 
         if (barrelRoll.progress >= CONTROLS.ROLL_DURATION) {
             barrelRoll.active = false;
@@ -933,11 +991,17 @@ function buildColonnade() {
         const gapWallGeo = new THREE.BoxGeometry(3, 55, 12);
         const gapWall = new THREE.Mesh(gapWallGeo, ARCH_MATS.dustyRose);
         gapWall.position.copy(midFrame.pos);
-        gapWall.position.addScaledVector(midFrame.right, side * 7);
+        gapWall.position.addScaledVector(midFrame.right, side * 17); // Start 10 units further apart
         gapWall.position.y = -18 + 27.5;
         gapWall.lookAt(midFrame.pos);
         gapWall.rotation.x = 0;
         gapWall.rotation.z = 0;
+        gapWall.userData.isClosingWall = true;
+        gapWall.userData.closedOffset = side * 7; // Target position offset
+        gapWall.userData.openOffset = side * 17;  // Starting position offset
+        gapWall.userData.side = side;
+        gapWall.userData.rightVec = midFrame.right.clone();
+        gapWall.userData.basePos = midFrame.pos.clone();
         addArch(gapWall);
     }
 }
@@ -1356,13 +1420,110 @@ function createFragmentPool() {
     }
 }
 
+function createFlyerPool() {
+    const geo = new THREE.TetrahedronGeometry(0.7, 0);
+    const mat = new THREE.MeshPhongMaterial({ color: 0x00F0FF, emissive: 0x00F0FF, emissiveIntensity: 0.4, flatShading: true });
+    for (let i = 0; i < COMBAT.FLYER_POOL_SIZE; i++) {
+        const flyer = new THREE.Mesh(geo, mat.clone());
+        flyer.visible = false;
+        flyer.userData = {
+            active: false, hp: 1, hitbox: COMBAT.FLYER_HITBOX,
+            type: 'flyer', groupId: -1, formationOffset: new THREE.Vector3(),
+            scattered: false, scatterDir: new THREE.Vector3(), scatterTimer: 0,
+            flashTimer: 0
+        };
+        scene.add(flyer);
+        formationFlyers.push(flyer);
+    }
+}
+
+function createMiniboss() {
+    boss = new THREE.Group();
+
+    // Core
+    const coreGeo = new THREE.IcosahedronGeometry(3, 0);
+    const coreMat = new THREE.MeshPhongMaterial({ color: 0x2D2D2D, flatShading: true });
+    const core = new THREE.Mesh(coreGeo, coreMat);
+    core.name = 'core';
+    boss.add(core);
+
+    // Spikes - distribute on icosahedron vertices
+    const icoGeo = new THREE.IcosahedronGeometry(3, 0);
+    const posAttr = icoGeo.getAttribute('position');
+    const usedDirs = [];
+    // Get unique vertex directions
+    for (let i = 0; i < posAttr.count; i++) {
+        const v = new THREE.Vector3(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i)).normalize();
+        let isDuplicate = false;
+        for (const u of usedDirs) {
+            if (u.distanceTo(v) < 0.1) { isDuplicate = true; break; }
+        }
+        if (!isDuplicate) usedDirs.push(v);
+        if (usedDirs.length >= 12) break;
+    }
+
+    const spikeGeo = new THREE.ConeGeometry(0.5, 3, 4);
+    const spikeMat = new THREE.MeshPhongMaterial({ color: 0xE63988, emissive: 0xE63988, emissiveIntensity: 0.5, flatShading: true });
+
+    for (const dir of usedDirs) {
+        const spike = new THREE.Mesh(spikeGeo, spikeMat.clone());
+        spike.position.copy(dir).multiplyScalar(3);
+        // Point spike outward
+        spike.lookAt(dir.clone().multiplyScalar(10));
+        spike.rotateX(Math.PI / 2);
+        spike.userData.originalPos = spike.position.clone();
+        spike.userData.originalQuat = spike.quaternion.clone();
+        spike.userData.dir = dir.clone();
+        bossState.spikes.push(spike);
+        boss.add(spike);
+    }
+
+    // Beam mesh (hidden initially)
+    const beamGeo = new THREE.BoxGeometry(0.5, 0.5, COMBAT.BOSS_BEAM_LENGTH);
+    const beamMat = new THREE.MeshBasicMaterial({ color: 0xE63988, transparent: true, opacity: 0.8 });
+    bossState.beamMesh = new THREE.Mesh(beamGeo, beamMat);
+    bossState.beamMesh.visible = false;
+    boss.add(bossState.beamMesh);
+
+    boss.visible = false;
+    boss.userData = { type: 'boss', hitbox: COMBAT.BOSS_HITBOX };
+    scene.add(boss);
+
+    // Create glow panels behind monolith facade panels
+    archGroup.traverse(child => {
+        if (child.userData.isFacadePanel) {
+            const glowGeo = new THREE.PlaneGeometry(
+                child.geometry.parameters.width || 4,
+                child.geometry.parameters.height || 4
+            );
+            const glowMat = new THREE.MeshBasicMaterial({ color: COLORS.LASER, transparent: true, opacity: 0.8 });
+            const glowPanel = new THREE.Mesh(glowGeo, glowMat);
+            glowPanel.position.copy(child.position);
+            // Inset slightly behind the panel
+            glowPanel.visible = false;
+            glowPanel.userData.facadePanel = child;
+            bossState.glowPanels.push(glowPanel);
+            archGroup.add(glowPanel);
+        }
+    });
+
+    // Find closing wall slabs
+    archGroup.traverse(child => {
+        if (child.userData.isClosingWall) {
+            closingWallSlabs.push(child);
+        }
+    });
+}
+
 function initCombat() {
     createProjectilePool();
     createEnemyProjectilePool();
     createDronePool();
     createTurretPool();
+    createFlyerPool();
     createShardPool();
     createFragmentPool();
+    createMiniboss();
 
     // Store ship original materials for damage flash
     shipGroup.traverse(child => {
@@ -1389,23 +1550,30 @@ const spawnEvents = [
     { t: 0.15, type: 'drone', count: 4, formation: 'diamond', side: 'center' },
     { t: 0.20, type: 'drone', count: 3, formation: 'v', side: 'right' },
     { t: 0.25, type: 'drone', count: 5, formation: 'line', side: 'left' },
-    // Section 2: Labyrinth - drones + turrets
+    // Section 2: Labyrinth - drones + turrets + formations
     { t: 0.40, type: 'drone', count: 3, formation: 'v', side: 'left' },
     { t: 0.42, type: 'turret', count: 2, wallSide: 'left' },
+    { t: 0.44, type: 'formation', count: 4, formation: 'diamond', side: 'center' },
     { t: 0.46, type: 'drone', count: 4, formation: 'diamond', side: 'center' },
     { t: 0.50, type: 'turret', count: 2, wallSide: 'right' },
     { t: 0.52, type: 'drone', count: 4, formation: 'line', side: 'right' },
     { t: 0.55, type: 'turret', count: 3, wallSide: 'both' },
+    { t: 0.56, type: 'formation', count: 6, formation: 'v', side: 'left' },
     { t: 0.58, type: 'drone', count: 3, formation: 'v', side: 'center' },
+    { t: 0.60, type: 'formation', count: 5, formation: 'line', side: 'right' },
     { t: 0.62, type: 'drone', count: 3, formation: 'line', side: 'left' },
     { t: 0.63, type: 'turret', count: 2, wallSide: 'right' },
-    // Section 3: Monolith - heavier
+    // Section 3: Monolith - heavier + formations + boss
     { t: 0.74, type: 'drone', count: 4, formation: 'diamond', side: 'center' },
+    { t: 0.75, type: 'formation', count: 6, formation: 'v', side: 'left' },
     { t: 0.76, type: 'turret', count: 3, wallSide: 'both' },
     { t: 0.78, type: 'drone', count: 5, formation: 'v', side: 'left' },
+    { t: 0.80, type: 'miniboss' },
     { t: 0.82, type: 'drone', count: 4, formation: 'line', side: 'right' },
+    { t: 0.84, type: 'formation', count: 4, formation: 'diamond', side: 'right' },
     { t: 0.85, type: 'turret', count: 2, wallSide: 'left' },
     { t: 0.88, type: 'drone', count: 6, formation: 'diamond', side: 'center' },
+    { t: 0.90, type: 'formation', count: 6, formation: 'line', side: 'center' },
     { t: 0.92, type: 'turret', count: 3, wallSide: 'both' },
 ];
 let triggeredSpawns = new Set();
@@ -1509,9 +1677,112 @@ function processSpawns() {
                         spawnTurret(pos);
                     }
                 }
+            } else if (ev.type === 'formation') {
+                spawnFormationGroup(frame, ev);
+            } else if (ev.type === 'miniboss') {
+                activateMiniboss();
             }
         }
     }
+}
+
+function spawnFormationGroup(frame, ev) {
+    const offsets = getFormationOffsets(ev.formation, ev.count);
+    let baseOffset = new THREE.Vector3();
+    if (ev.side === 'left') baseOffset.copy(frame.right).multiplyScalar(-15);
+    else if (ev.side === 'right') baseOffset.copy(frame.right).multiplyScalar(15);
+    else baseOffset.copy(frame.tan).multiplyScalar(30);
+    const spawnPos = frame.pos.clone().add(baseOffset).addScaledVector(frame.tan, -40);
+
+    const group = {
+        id: formationGroups.length,
+        center: spawnPos.clone(),
+        moveDir: frame.tan.clone().negate().multiplyScalar(10),
+        scattered: false, scatterTimer: 0,
+        members: []
+    };
+
+    for (const off of offsets) {
+        for (const f of formationFlyers) {
+            if (!f.userData.active) {
+                f.userData.active = true;
+                f.userData.hp = COMBAT.FLYER_HP;
+                f.userData.groupId = group.id;
+                f.userData.formationOffset.set(off.x, off.y + 3, 0);
+                f.userData.scattered = false;
+                f.userData.scatterTimer = 0;
+                f.userData.flashTimer = 0;
+                f.position.copy(spawnPos).addScaledVector(frame.right, off.x).addScaledVector(frame.up, off.y + 3);
+                f.visible = true;
+                f.material.color.setHex(0x00F0FF);
+                f.scale.set(1, 1, 1);
+                group.members.push(f);
+                break;
+            }
+        }
+    }
+    formationGroups.push(group);
+}
+
+function scatterFormationGroup(groupId) {
+    const group = formationGroups.find(g => g.id === groupId);
+    if (!group || group.scattered) return;
+    group.scattered = true;
+    group.scatterTimer = COMBAT.FLYER_SCATTER_TIME;
+    for (const f of group.members) {
+        if (f.userData.active) {
+            f.userData.scattered = true;
+            f.userData.scatterTimer = COMBAT.FLYER_SCATTER_TIME;
+            f.userData.scatterDir.set(
+                (Math.random() - 0.5) * 25,
+                (Math.random() - 0.5) * 15,
+                (Math.random() - 0.5) * 25
+            );
+        }
+    }
+}
+
+function activateMiniboss() {
+    if (bossState.active) return;
+    bossState.active = true;
+    bossState.hp = COMBAT.BOSS_HP;
+    bossState.maxHp = COMBAT.BOSS_HP;
+    bossState.phase = 1;
+    bossState.dying = false;
+    bossState.deathTimer = 0;
+    bossState.burstTimer = COMBAT.BOSS_BURST_INTERVAL_P1;
+    bossState.droneTimer = COMBAT.BOSS_DRONE_INTERVAL_P1;
+    bossState.beamTimer = COMBAT.BOSS_BEAM_INTERVAL;
+    bossState.beamActive = false;
+    bossState.orbitAngle = 0;
+    bossState.thresholds = { t75: false, t50: false, t25: false };
+
+    // Find monolith center from architecture
+    const centerT = (SECTIONS.MONOLITH.start + SECTIONS.MONOLITH.end) / 2;
+    const centerFrame = getSplineFrame(centerT);
+    bossState.orbitCenter.copy(centerFrame.pos);
+    bossState.orbitCenter.addScaledVector(centerFrame.right, 35);
+    bossState.orbitCenter.y = centerFrame.pos.y + 20;
+
+    // Reset spikes
+    for (const spike of bossState.spikes) {
+        spike.visible = true;
+        spike.position.copy(spike.userData.originalPos);
+        spike.quaternion.copy(spike.userData.originalQuat);
+        spike.material.opacity = 1;
+    }
+
+    boss.visible = true;
+    boss.children.find(c => c.name === 'core').material.color.setHex(0x2D2D2D);
+    boss.scale.set(1, 1, 1);
+
+    document.getElementById('boss-hp-bar').style.display = 'block';
+    updateBossHPBar();
+}
+
+function updateBossHPBar() {
+    const pct = Math.max(0, bossState.hp / bossState.maxHp) * 100;
+    document.getElementById('boss-hp-fill').style.width = pct + '%';
 }
 
 // ============================================================
@@ -1750,6 +2021,10 @@ function enemyDeath(enemy) {
         spawnDeathFlash(pos, 0x00F0FF);
         spawnShards(pos, 3);
         score += 250;
+    } else if (type === 'flyer') {
+        spawnFragments(pos, 0x00F0FF, 3);
+        spawnShards(pos, 1);
+        score += 150;
     }
 
     document.getElementById('score').textContent = score;
@@ -1782,6 +2057,36 @@ function checkCollisions() {
                 t.userData.flashTimer = 0.08;
                 if (t.userData.hp <= 0) enemyDeath(t);
                 break;
+            }
+        }
+        if (!p.userData.active) continue;
+
+        // vs formation flyers
+        for (const f of formationFlyers) {
+            if (!f.userData.active) continue;
+            if (p.position.distanceTo(f.position) < COMBAT.FLYER_HITBOX + 0.3) {
+                p.userData.active = false;
+                p.visible = false;
+                f.userData.hp--;
+                f.userData.flashTimer = 0.08;
+                if (f.userData.hp <= 0) {
+                    scatterFormationGroup(f.userData.groupId);
+                    enemyDeath(f);
+                    // Remove from group members
+                    const grp = formationGroups.find(g => g.id === f.userData.groupId);
+                    if (grp) grp.members = grp.members.filter(m => m !== f);
+                }
+                break;
+            }
+        }
+        if (!p.userData.active) continue;
+
+        // vs miniboss
+        if (bossState.active && !bossState.dying) {
+            if (p.position.distanceTo(boss.position) < COMBAT.BOSS_HITBOX + 0.3) {
+                p.userData.active = false;
+                p.visible = false;
+                damageBoss(1);
             }
         }
     }
@@ -1905,6 +2210,448 @@ function updateFragments(dt) {
 }
 
 // ============================================================
+// COMBAT - FORMATION FLYER UPDATES
+// ============================================================
+function updateFormationFlyers(dt) {
+    // Update group centers
+    for (const group of formationGroups) {
+        if (group.scattered) {
+            group.scatterTimer -= dt;
+            if (group.scatterTimer <= 0) group.scattered = false;
+        }
+        // Move group center toward player
+        const toShip = new THREE.Vector3().subVectors(shipGroup.position, group.center);
+        if (toShip.length() > 5) {
+            group.center.addScaledVector(toShip.normalize(), dt * 8);
+        }
+    }
+
+    for (const f of formationFlyers) {
+        if (!f.userData.active) continue;
+
+        f.rotation.x += dt * 1.5;
+        f.rotation.y += dt * 1.2;
+
+        const group = formationGroups.find(g => g.id === f.userData.groupId);
+        if (!group) continue;
+
+        if (f.userData.scattered && f.userData.scatterTimer > 0) {
+            // Scatter: fly in random direction
+            f.userData.scatterTimer -= dt;
+            f.position.addScaledVector(f.userData.scatterDir, dt);
+            if (f.userData.scatterTimer <= 0) {
+                f.userData.scattered = false;
+            }
+        } else {
+            // Formation: move toward formation position
+            const targetPos = group.center.clone().add(f.userData.formationOffset);
+            f.position.lerp(targetPos, 0.05);
+        }
+
+        if (f.userData.flashTimer > 0) {
+            f.userData.flashTimer -= dt;
+            f.material.color.setHex(f.userData.flashTimer > 0 ? 0xffffff : 0x00F0FF);
+        }
+
+        if (f.position.distanceTo(shipGroup.position) > 200) {
+            f.userData.active = false;
+            f.visible = false;
+        }
+    }
+}
+
+// ============================================================
+// COMBAT - MINIBOSS UPDATE
+// ============================================================
+function updateMiniboss(dt) {
+    if (!bossState.active) return;
+
+    if (bossState.dying) {
+        updateBossDeathSequence(dt);
+        return;
+    }
+
+    // Orbit
+    bossState.orbitAngle += COMBAT.BOSS_ORBIT_SPEED * dt;
+    boss.position.set(
+        bossState.orbitCenter.x + Math.cos(bossState.orbitAngle) * COMBAT.BOSS_ORBIT_RADIUS,
+        bossState.orbitCenter.y + Math.sin(bossState.orbitAngle * 0.5) * 8,
+        bossState.orbitCenter.z + Math.sin(bossState.orbitAngle) * COMBAT.BOSS_ORBIT_RADIUS
+    );
+
+    // Face player
+    boss.lookAt(shipGroup.position);
+
+    // Pulse spike emissive
+    const pulse = 0.3 + Math.sin(elapsedTime * Math.PI) * 0.3;
+    for (const spike of bossState.spikes) {
+        if (spike.visible) spike.material.emissiveIntensity = pulse;
+    }
+
+    const inPhase2 = bossState.phase === 2;
+
+    // Radial burst attack
+    bossState.burstTimer -= dt;
+    if (bossState.burstTimer <= 0) {
+        bossState.burstTimer = inPhase2 ? COMBAT.BOSS_BURST_INTERVAL_P2 : COMBAT.BOSS_BURST_INTERVAL_P1;
+        fireBossRadialBurst();
+    }
+
+    // Drone spawning
+    bossState.droneTimer -= dt;
+    if (bossState.droneTimer <= 0) {
+        bossState.droneTimer = inPhase2 ? COMBAT.BOSS_DRONE_INTERVAL_P2 : COMBAT.BOSS_DRONE_INTERVAL_P1;
+        const droneCount = inPhase2 ? 4 : 2;
+        for (let i = 0; i < droneCount; i++) {
+            const pos = boss.position.clone().add(new THREE.Vector3(
+                (Math.random() - 0.5) * 6, (Math.random() - 0.5) * 6, (Math.random() - 0.5) * 6
+            ));
+            spawnDrone(pos);
+        }
+    }
+
+    // Phase 2: sweeping beam
+    if (inPhase2) {
+        if (!bossState.beamActive) {
+            bossState.beamTimer -= dt;
+            if (bossState.beamTimer <= 0) {
+                bossState.beamActive = true;
+                bossState.beamAngle = 0;
+                bossState.beamMesh.visible = true;
+            }
+        } else {
+            bossState.beamAngle += (Math.PI * 2 / COMBAT.BOSS_BEAM_DURATION) * dt;
+            bossState.beamMesh.position.set(0, 0, -COMBAT.BOSS_BEAM_LENGTH / 2);
+            bossState.beamMesh.rotation.set(0, bossState.beamAngle, 0);
+
+            // Check beam collision - approximate with spheres along length
+            for (let d = 3; d < COMBAT.BOSS_BEAM_LENGTH; d += 5) {
+                const beamWorldPos = new THREE.Vector3(0, 0, -d);
+                beamWorldPos.applyAxisAngle(new THREE.Vector3(0, 1, 0), bossState.beamAngle);
+                beamWorldPos.add(boss.position);
+                if (beamWorldPos.distanceTo(shipGroup.position) < 2.5) {
+                    if (playerInvulnTimer <= 0 && !barrelRoll.active) {
+                        damagePlayer();
+                    }
+                    break;
+                }
+            }
+
+            if (bossState.beamAngle >= Math.PI * 2) {
+                bossState.beamActive = false;
+                bossState.beamMesh.visible = false;
+                bossState.beamTimer = COMBAT.BOSS_BEAM_INTERVAL;
+            }
+        }
+    }
+}
+
+function fireBossRadialBurst() {
+    const toPlayer = new THREE.Vector3().subVectors(shipGroup.position, boss.position).normalize();
+    const right = new THREE.Vector3().crossVectors(toPlayer, _worldUp).normalize();
+    const up = new THREE.Vector3().crossVectors(right, toPlayer).normalize();
+
+    for (let i = 0; i < 8; i++) {
+        const angle = (i / 8) * Math.PI * 2;
+        const dir = new THREE.Vector3()
+            .addScaledVector(right, Math.cos(angle))
+            .addScaledVector(up, Math.sin(angle))
+            .addScaledVector(toPlayer, 0.5)
+            .normalize();
+        const targetPos = boss.position.clone().add(dir.multiplyScalar(100));
+        fireEnemyProjectile(boss.position.clone(), targetPos);
+    }
+}
+
+function damageBoss(amount) {
+    if (bossState.dying) return;
+    bossState.hp -= amount;
+    updateBossHPBar();
+
+    // Flash core white
+    const core = boss.children.find(c => c.name === 'core');
+    if (core) {
+        core.material.color.setHex(0xffffff);
+        setTimeout(() => { if (core) core.material.color.setHex(0x2D2D2D); }, 80);
+    }
+
+    // HP thresholds
+    const pct = bossState.hp / bossState.maxHp;
+    if (pct <= 0.75 && !bossState.thresholds.t75) {
+        bossState.thresholds.t75 = true;
+        detachMonolithPanels(3);
+        spawnShards(boss.position, 5);
+    }
+    if (pct <= 0.50 && !bossState.thresholds.t50) {
+        bossState.thresholds.t50 = true;
+        bossState.phase = 2;
+        detachMonolithPanels(3);
+        spawnShards(boss.position, 5);
+    }
+    if (pct <= 0.25 && !bossState.thresholds.t25) {
+        bossState.thresholds.t25 = true;
+        detachMonolithPanels(3);
+        spawnShards(boss.position, 5);
+    }
+
+    if (bossState.hp <= 0) {
+        bossState.hp = 0;
+        bossState.dying = true;
+        bossState.deathTimer = 0;
+        bossState.beamMesh.visible = false;
+        bossState.beamActive = false;
+        score += 2000;
+        document.getElementById('score').textContent = score;
+    }
+}
+
+function detachMonolithPanels(count) {
+    let detached = 0;
+    for (const gp of bossState.glowPanels) {
+        if (detached >= count) break;
+        const panel = gp.userData.facadePanel;
+        if (!panel || !panel.visible) continue;
+        // Detach panel - give it velocity
+        panel.userData.detaching = true;
+        panel.userData.detachVel = new THREE.Vector3(
+            (Math.random() - 0.5) * 15,
+            Math.random() * 10,
+            (Math.random() - 0.5) * 15
+        );
+        panel.userData.detachLife = 0;
+        // Reveal glow behind it
+        gp.visible = true;
+        detached++;
+    }
+}
+
+function updateDetachingPanels(dt) {
+    archGroup.traverse(child => {
+        if (child.userData.detaching) {
+            child.userData.detachLife += dt;
+            child.position.addScaledVector(child.userData.detachVel, dt);
+            child.userData.detachVel.y -= dt * 8;
+            child.rotation.x += dt * 2;
+            child.rotation.z += dt * 1.5;
+            if (child.userData.detachLife > 1.5) {
+                child.visible = false;
+                child.userData.detaching = false;
+            }
+        }
+    });
+}
+
+function updateBossDeathSequence(dt) {
+    bossState.deathTimer += dt;
+    const t = bossState.deathTimer;
+
+    // t=0: Spikes fly off
+    if (t < 0.05) {
+        for (const spike of bossState.spikes) {
+            if (spike.visible && !spike.userData.flyingOff) {
+                spike.userData.flyingOff = true;
+                spike.userData.flyVel = spike.userData.dir.clone().multiplyScalar(15 + Math.random() * 10);
+                spike.userData.flyVel.y += Math.random() * 5;
+            }
+        }
+    }
+
+    // Animate flying spikes
+    for (const spike of bossState.spikes) {
+        if (spike.userData.flyingOff && spike.visible) {
+            spike.position.addScaledVector(spike.userData.flyVel, dt);
+            spike.rotation.x += dt * 8;
+            spike.rotation.z += dt * 6;
+            spike.material.opacity = Math.max(0, 1 - t);
+            spike.material.transparent = true;
+            if (t > 1.0) spike.visible = false;
+        }
+    }
+
+    // t=0.3: Core flashes white, pulse
+    const core = boss.children.find(c => c.name === 'core');
+    if (t >= 0.3 && t < 0.8 && core) {
+        core.material.color.setHex(0xffffff);
+        core.material.emissive = new THREE.Color(0xffffff);
+        core.material.emissiveIntensity = 0.5;
+        const pulseT = (t - 0.3) / 0.5;
+        const pulseScale = 1 + Math.sin(pulseT * Math.PI * 6) * 0.3;
+        core.scale.set(pulseScale, pulseScale, pulseScale);
+    }
+
+    // t=0.8: Implode
+    if (t >= 0.8 && t < 1.0 && core) {
+        const implodeT = (t - 0.8) / 0.2;
+        const s = Math.max(0.01, 1 - implodeT);
+        core.scale.set(s, s, s);
+    }
+
+    // t=1.0: Explosion
+    if (t >= 1.0 && t < 1.1) {
+        if (core) core.visible = false;
+        spawnFragments(boss.position, 0xE63988, 10);
+        spawnFragments(boss.position, 0x00F0FF, 10);
+        spawnFragments(boss.position, 0xffffff, 10);
+        spawnShards(boss.position, 10);
+
+        // Screen flash
+        const flash = document.getElementById('boss-death-flash');
+        flash.style.opacity = '0.8';
+        setTimeout(() => { flash.style.transition = 'opacity 0.5s'; flash.style.opacity = '0'; }, 50);
+    }
+
+    // t=1.5: Kill boss-spawned drones
+    if (t >= 1.5 && t < 1.6) {
+        for (const d of drones) {
+            if (d.userData.active) {
+                enemyDeath(d);
+            }
+        }
+    }
+
+    // t=2.0: Done
+    if (t >= 2.0) {
+        bossState.active = false;
+        bossState.dying = false;
+        boss.visible = false;
+        bossDefeated = true;
+        document.getElementById('boss-hp-bar').style.display = 'none';
+    }
+}
+
+// ============================================================
+// SET PIECES
+// ============================================================
+function updateSetPieces(dt) {
+    // Closing walls (Section 1, t ~0.12)
+    if (!closingWallsTriggered && splineProgress >= 0.12) {
+        closingWallsTriggered = true;
+        closingWallsTimer = 0;
+    }
+    if (closingWallsTriggered && closingWallsTimer < 5) {
+        closingWallsTimer += dt;
+        const t = Math.min(closingWallsTimer / 5, 1);
+        // Smoothstep ease
+        const eased = t * t * (3 - 2 * t);
+        for (const slab of closingWallSlabs) {
+            const openOff = slab.userData.openOffset;
+            const closedOff = slab.userData.closedOffset;
+            const currentOff = openOff + (closedOff - openOff) * eased;
+            slab.position.copy(slab.userData.basePos);
+            slab.position.addScaledVector(slab.userData.rightVec, currentOff);
+            slab.position.y = -18 + 27.5;
+        }
+    }
+
+    // Crumbling bridge (Section 2, t ~0.53)
+    if (!bridgeCrumbleTriggered && splineProgress >= 0.53) {
+        bridgeCrumbleTriggered = true;
+        triggerBridgeCrumble();
+    }
+    if (bridgeFragments.length > 0) {
+        for (const bf of bridgeFragments) {
+            if (!bf.userData.active) continue;
+            bf.userData.age += dt;
+            bf.position.addScaledVector(bf.userData.velocity, dt);
+            bf.userData.velocity.y -= dt * 20; // gravity
+            bf.rotation.x += bf.userData.rotVel.x * dt;
+            bf.rotation.y += bf.userData.rotVel.y * dt;
+            bf.rotation.z += bf.userData.rotVel.z * dt;
+
+            // Dangerous for first 1 second
+            if (bf.userData.age < 1.0 && bf.userData.age > 0.1) {
+                if (bf.position.distanceTo(shipGroup.position) < 2.5) {
+                    if (playerInvulnTimer <= 0 && !barrelRoll.active) {
+                        damagePlayer();
+                    }
+                }
+            }
+
+            // Fade after 1.5s, remove at 2s
+            if (bf.userData.age > 1.5) {
+                bf.material.opacity = Math.max(0, 1 - (bf.userData.age - 1.5) / 0.5);
+            }
+            if (bf.userData.age > 2.0) {
+                bf.userData.active = false;
+                bf.visible = false;
+            }
+        }
+    }
+
+    // Detaching panels
+    updateDetachingPanels(dt);
+}
+
+function triggerBridgeCrumble() {
+    // Find bridge
+    let bridgeMesh = null;
+    archGroup.traverse(child => {
+        if (child.userData.isBridge) bridgeMesh = child;
+    });
+    if (!bridgeMesh) return;
+
+    const bridgePos = bridgeMesh.position.clone();
+    const bridgeW = 35, bridgeH = 3, bridgeD = 10;
+    bridgeMesh.visible = false;
+
+    // Create fragments
+    const cols = 4, rows = 3;
+    const fragW = bridgeW / cols, fragH = bridgeH, fragD = bridgeD / rows;
+    for (let c = 0; c < cols; c++) {
+        for (let r = 0; r < rows; r++) {
+            const geo = new THREE.BoxGeometry(fragW * (0.7 + Math.random() * 0.3), fragH, fragD * (0.7 + Math.random() * 0.3));
+            const mat = new THREE.MeshLambertMaterial({ color: COLORS.COOL_CONCRETE, flatShading: true, transparent: true });
+            const frag = new THREE.Mesh(geo, mat);
+            frag.position.copy(bridgePos);
+            frag.position.x += (c - cols / 2 + 0.5) * fragW;
+            frag.position.z += (r - rows / 2 + 0.5) * fragD;
+            frag.userData = {
+                active: true, age: Math.random() * 0.3,
+                velocity: new THREE.Vector3((Math.random() - 0.5) * 5, -15 - Math.random() * 10, (Math.random() - 0.5) * 5),
+                rotVel: new THREE.Vector3((Math.random() - 0.5) * 3, (Math.random() - 0.5) * 3, (Math.random() - 0.5) * 3)
+            };
+            frag.castShadow = true;
+            scene.add(frag);
+            bridgeFragments.push(frag);
+        }
+    }
+}
+
+// ============================================================
+// END OF LEVEL
+// ============================================================
+function updateEndOfLevel(dt) {
+    if (levelEnding) {
+        levelEndTimer += dt;
+        // Increase fog to white-out
+        const fogT = Math.min(levelEndTimer / 2, 1);
+        scene.fog.near = 80 - fogT * 70;
+        scene.fog.far = 450 - fogT * 400;
+        scene.fog.color.lerp(new THREE.Color(0xffffff), fogT * 0.02);
+
+        if (levelEndTimer > 2 && !document.getElementById('run-complete')) {
+            const div = document.createElement('div');
+            div.id = 'run-complete';
+            div.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);color:#fff;font-family:Courier New,monospace;font-size:32px;letter-spacing:6px;z-index:20;opacity:0;transition:opacity 1s;';
+            div.textContent = 'RUN COMPLETE';
+            document.body.appendChild(div);
+            setTimeout(() => div.style.opacity = '1', 50);
+        }
+        return;
+    }
+
+    if (splineProgress >= 0.95) {
+        if (bossDefeated || !bossState.active) {
+            levelEnding = true;
+            levelEndTimer = 0;
+        } else {
+            // Boss still alive - slow down and hold position
+            splineProgress = Math.min(splineProgress, 0.96);
+        }
+    }
+}
+
+// ============================================================
 // COMBAT - CROSSHAIR & AIMING
 // ============================================================
 function updateCrosshair() {
@@ -1938,6 +2685,22 @@ function updateCrosshair() {
             }
         }
     }
+    if (!hostile) {
+        for (const f of formationFlyers) {
+            if (!f.userData.active) continue;
+            const sphere = new THREE.Sphere(f.position, COMBAT.FLYER_HITBOX);
+            if (aimRaycaster.ray.intersectsSphere(sphere, new THREE.Vector3())) {
+                hostile = true;
+                break;
+            }
+        }
+    }
+    if (!hostile && bossState.active && !bossState.dying) {
+        const sphere = new THREE.Sphere(boss.position, COMBAT.BOSS_HITBOX);
+        if (aimRaycaster.ray.intersectsSphere(sphere, new THREE.Vector3())) {
+            hostile = true;
+        }
+    }
     crosshairEl.className = hostile ? 'hostile' : '';
 }
 
@@ -1963,12 +2726,16 @@ function updateCombat(dt) {
     processSpawns();
     updateDrones(dt);
     updateTurrets(dt);
+    updateFormationFlyers(dt);
+    updateMiniboss(dt);
     updatePlayerProjectiles(dt);
     updateEnemyProjectiles(dt);
     checkCollisions();
     updateDamageEffects(dt);
     updateShards(dt);
     updateFragments(dt);
+    updateSetPieces(dt);
+    updateEndOfLevel(dt);
     updateCrosshair();
 }
 
