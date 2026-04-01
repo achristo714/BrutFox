@@ -62,6 +62,13 @@ canvas { display: block; }
 .result-row span { color: #fff; }
 #play-again { margin-top: 32px; padding: 12px 32px; background: transparent; border: 2px solid #E07A5F; color: #fff; font-family: inherit; font-size: 14px; letter-spacing: 3px; cursor: pointer; opacity: 0; transition: opacity 0.5s, background 0.2s; }
 #play-again:hover { background: #E07A5F; }
+#controls-overlay { position: fixed; inset: 0; z-index: 30; display: none; background: rgba(0,0,0,0.85); justify-content: center; align-items: center; flex-direction: column; }
+#controls-overlay h2 { color: #fff; font-size: 24px; letter-spacing: 4px; margin-bottom: 24px; }
+#controls-overlay table { border-collapse: collapse; }
+#controls-overlay td { padding: 6px 16px; font-size: 14px; }
+#controls-overlay td:first-child { color: #aaa; text-align: right; }
+#controls-overlay td:last-child { color: #fff; }
+#controls-overlay .hint { color: #666; font-size: 11px; margin-top: 20px; }
 </style>
 </head>
 <body>
@@ -86,6 +93,23 @@ canvas { display: block; }
 <div id="card-overlay"></div>
 <div id="damage-flash"></div>
 <div id="boss-death-flash"></div>
+<div id="controls-overlay">
+  <h2>CONTROLS</h2>
+  <table>
+    <tr><td>MOVE</td><td>Mouse</td></tr>
+    <tr><td>FIRE</td><td>Left Click (hold)</td></tr>
+    <tr><td>BARREL ROLL</td><td>Q / E &nbsp;or&nbsp; Double-tap A / D</td></tr>
+    <tr><td>BOOST</td><td>Shift (hold)</td></tr>
+    <tr><td>MUTE</td><td>M</td></tr>
+    <tr><td>DEBUG PATH</td><td>L</td></tr>
+    <tr><td></td><td></td></tr>
+    <tr><td>GAMEPAD MOVE</td><td>Left Stick</td></tr>
+    <tr><td>GAMEPAD FIRE</td><td>Right Trigger / A</td></tr>
+    <tr><td>GAMEPAD ROLL</td><td>Bumpers</td></tr>
+    <tr><td>GAMEPAD BOOST</td><td>Left Trigger</td></tr>
+  </table>
+  <div class="hint">ESC to close</div>
+</div>
 <div id="results-screen">
   <h1>RUN COMPLETE</h1>
   <div class="result-row">SCORE <span id="res-score">0</span></div>
@@ -712,7 +736,11 @@ function initInput() {
 
         const now = clock.elapsedTime;
 
-        // Double-tap detection for barrel roll
+        // Single-tap Q/E for barrel roll
+        if (e.code === 'KeyQ') triggerBarrelRoll(-1);
+        if (e.code === 'KeyE') triggerBarrelRoll(1);
+
+        // Double-tap A/D also works
         if (e.code === 'KeyA') {
             if (now - input.lastTapA < CONTROLS.DOUBLE_TAP_WINDOW) {
                 triggerBarrelRoll(-1);
@@ -724,6 +752,16 @@ function initInput() {
                 triggerBarrelRoll(1);
             }
             input.lastTapD = now;
+        }
+
+        // ESC toggles controls overlay
+        if (e.code === 'Escape') {
+            const co = document.getElementById('controls-overlay');
+            if (co.style.display === 'flex') {
+                co.style.display = 'none';
+            } else {
+                co.style.display = 'flex';
+            }
         }
     });
 
@@ -1488,6 +1526,42 @@ function updateArchCulling() {
     }
 }
 
+// Architecture collision - check ship against nearby architecture boxes
+function checkArchCollision() {
+    if (playerInvulnTimer > 0 || barrelRoll.active) return;
+    const shipPos = shipGroup.position;
+    const shipRadius = 1.5;
+
+    for (let i = 0; i < archObjects.length; i++) {
+        const obj = archObjects[i];
+        if (!obj.visible || !obj.geometry || !obj.geometry.parameters) continue;
+
+        const p = obj.geometry.parameters;
+        const w = (p.width || 2) / 2;
+        const h = (p.height || 2) / 2;
+        const d = (p.depth || 2) / 2;
+
+        // Quick distance check first
+        const dx = shipPos.x - obj.position.x;
+        const dy = shipPos.y - obj.position.y;
+        const dz = shipPos.z - obj.position.z;
+        const maxDim = Math.max(w, h, d) + shipRadius;
+        if (dx * dx + dy * dy + dz * dz > maxDim * maxDim * 4) continue;
+
+        // AABB check (approximate - ignores rotation but good enough)
+        if (Math.abs(dx) < w + shipRadius &&
+            Math.abs(dy) < h + shipRadius &&
+            Math.abs(dz) < d + shipRadius) {
+            damagePlayer();
+            // Push ship away from collision
+            const pushDir = new THREE.Vector3(dx, dy, dz).normalize();
+            shipOffset.x += pushDir.x * 3;
+            shipOffset.y += pushDir.y * 3;
+            return;
+        }
+    }
+}
+
 // ============================================================
 // RESIZE HANDLER
 // ============================================================
@@ -1527,7 +1601,7 @@ function createEnemyProjectilePool() {
 function createDronePool() {
     const geo = new THREE.OctahedronGeometry(1, 0);
     const mat = new THREE.MeshPhongMaterial({ color: 0xE63988, emissive: 0xE63988, emissiveIntensity: 0.3, flatShading: true });
-    for (let i = 0; i < 20; i++) {
+    for (let i = 0; i < 40; i++) {
         const drone = new THREE.Mesh(geo, mat.clone());
         drone.visible = false;
         drone.userData = {
@@ -1710,37 +1784,62 @@ function initCombat() {
 // COMBAT - SPAWN EVENTS
 // ============================================================
 const spawnEvents = [
-    // Section 1: Colonnade - drones only
+    // Section 1: Colonnade - drones, heavier waves
+    { t: 0.03, type: 'drone', count: 2, formation: 'line', side: 'center' },
     { t: 0.05, type: 'drone', count: 3, formation: 'v', side: 'left' },
-    { t: 0.10, type: 'drone', count: 2, formation: 'line', side: 'right' },
-    { t: 0.15, type: 'drone', count: 4, formation: 'diamond', side: 'center' },
-    { t: 0.20, type: 'drone', count: 3, formation: 'v', side: 'right' },
+    { t: 0.07, type: 'drone', count: 3, formation: 'v', side: 'right' },
+    { t: 0.10, type: 'drone', count: 4, formation: 'line', side: 'right' },
+    { t: 0.12, type: 'drone', count: 3, formation: 'diamond', side: 'left' },
+    { t: 0.15, type: 'drone', count: 5, formation: 'diamond', side: 'center' },
+    { t: 0.17, type: 'drone', count: 3, formation: 'v', side: 'left' },
+    { t: 0.20, type: 'drone', count: 4, formation: 'v', side: 'right' },
+    { t: 0.22, type: 'drone', count: 4, formation: 'line', side: 'center' },
     { t: 0.25, type: 'drone', count: 5, formation: 'line', side: 'left' },
-    // Section 2: Labyrinth - drones + turrets + formations
+    { t: 0.27, type: 'drone', count: 4, formation: 'diamond', side: 'right' },
+    { t: 0.29, type: 'drone', count: 3, formation: 'v', side: 'center' },
+    // Section 2: Labyrinth - dense drones + turrets + formations
+    { t: 0.39, type: 'drone', count: 4, formation: 'diamond', side: 'center' },
     { t: 0.40, type: 'drone', count: 3, formation: 'v', side: 'left' },
-    { t: 0.42, type: 'turret', count: 2, wallSide: 'left' },
-    { t: 0.44, type: 'formation', count: 4, formation: 'diamond', side: 'center' },
-    { t: 0.46, type: 'drone', count: 4, formation: 'diamond', side: 'center' },
+    { t: 0.41, type: 'turret', count: 2, wallSide: 'left' },
+    { t: 0.42, type: 'turret', count: 2, wallSide: 'right' },
+    { t: 0.43, type: 'drone', count: 3, formation: 'line', side: 'right' },
+    { t: 0.44, type: 'formation', count: 5, formation: 'diamond', side: 'center' },
+    { t: 0.46, type: 'drone', count: 4, formation: 'diamond', side: 'left' },
+    { t: 0.47, type: 'turret', count: 2, wallSide: 'both' },
+    { t: 0.48, type: 'drone', count: 3, formation: 'v', side: 'right' },
     { t: 0.50, type: 'turret', count: 2, wallSide: 'right' },
+    { t: 0.51, type: 'drone', count: 5, formation: 'line', side: 'center' },
     { t: 0.52, type: 'drone', count: 4, formation: 'line', side: 'right' },
+    { t: 0.53, type: 'formation', count: 4, formation: 'v', side: 'left' },
     { t: 0.55, type: 'turret', count: 3, wallSide: 'both' },
     { t: 0.56, type: 'formation', count: 6, formation: 'v', side: 'left' },
-    { t: 0.58, type: 'drone', count: 3, formation: 'v', side: 'center' },
-    { t: 0.60, type: 'formation', count: 5, formation: 'line', side: 'right' },
-    { t: 0.62, type: 'drone', count: 3, formation: 'line', side: 'left' },
-    { t: 0.63, type: 'turret', count: 2, wallSide: 'right' },
-    // Section 3: Monolith - heavier + formations + boss
-    { t: 0.74, type: 'drone', count: 4, formation: 'diamond', side: 'center' },
+    { t: 0.57, type: 'drone', count: 4, formation: 'diamond', side: 'right' },
+    { t: 0.58, type: 'drone', count: 4, formation: 'v', side: 'center' },
+    { t: 0.59, type: 'turret', count: 2, wallSide: 'left' },
+    { t: 0.60, type: 'formation', count: 6, formation: 'line', side: 'right' },
+    { t: 0.61, type: 'drone', count: 3, formation: 'line', side: 'left' },
+    { t: 0.62, type: 'drone', count: 4, formation: 'diamond', side: 'center' },
+    { t: 0.63, type: 'turret', count: 3, wallSide: 'right' },
+    { t: 0.64, type: 'drone', count: 3, formation: 'v', side: 'left' },
+    // Section 3: Monolith - heaviest + formations + boss
+    { t: 0.74, type: 'drone', count: 5, formation: 'diamond', side: 'center' },
     { t: 0.75, type: 'formation', count: 6, formation: 'v', side: 'left' },
     { t: 0.76, type: 'turret', count: 3, wallSide: 'both' },
+    { t: 0.77, type: 'drone', count: 4, formation: 'line', side: 'right' },
     { t: 0.78, type: 'drone', count: 5, formation: 'v', side: 'left' },
+    { t: 0.79, type: 'formation', count: 5, formation: 'diamond', side: 'right' },
     { t: 0.80, type: 'miniboss' },
-    { t: 0.82, type: 'drone', count: 4, formation: 'line', side: 'right' },
-    { t: 0.84, type: 'formation', count: 4, formation: 'diamond', side: 'right' },
-    { t: 0.85, type: 'turret', count: 2, wallSide: 'left' },
+    { t: 0.82, type: 'drone', count: 5, formation: 'line', side: 'right' },
+    { t: 0.83, type: 'turret', count: 2, wallSide: 'left' },
+    { t: 0.84, type: 'formation', count: 5, formation: 'diamond', side: 'right' },
+    { t: 0.85, type: 'turret', count: 2, wallSide: 'both' },
+    { t: 0.86, type: 'drone', count: 4, formation: 'v', side: 'left' },
     { t: 0.88, type: 'drone', count: 6, formation: 'diamond', side: 'center' },
+    { t: 0.89, type: 'formation', count: 6, formation: 'v', side: 'right' },
     { t: 0.90, type: 'formation', count: 6, formation: 'line', side: 'center' },
+    { t: 0.91, type: 'drone', count: 4, formation: 'diamond', side: 'left' },
     { t: 0.92, type: 'turret', count: 3, wallSide: 'both' },
+    { t: 0.93, type: 'drone', count: 5, formation: 'v', side: 'center' },
 ];
 let triggeredSpawns = new Set();
 
@@ -3520,48 +3619,55 @@ const Audio = {
 
     toggleMute() {
         this.muted = !this.muted;
-        if (this.master) this.master.gain.value = this.muted ? 0 : 0.7;
+        if (this.master) this.master.gain.value = this.muted ? 0 : 0.35;
         document.getElementById('mute-btn').textContent = this.muted ? '♪ OFF' : '♪ ON';
     },
 
-    // SFX helpers
+    // SFX helpers - auto-disconnect to prevent buildup
     playTone(freq, freqEnd, type, gain, dur, filterFreq) {
         if (!this.ctx || this.muted) return;
+        const t = this.ctx.currentTime;
         const osc = this.ctx.createOscillator();
         const g = this.ctx.createGain();
         osc.type = type;
-        osc.frequency.setValueAtTime(freq, this.ctx.currentTime);
-        if (freqEnd !== freq) osc.frequency.linearRampToValueAtTime(freqEnd, this.ctx.currentTime + dur);
-        g.gain.setValueAtTime(gain, this.ctx.currentTime);
-        g.gain.linearRampToValueAtTime(0, this.ctx.currentTime + dur);
+        osc.frequency.setValueAtTime(freq, t);
+        if (freqEnd !== freq) osc.frequency.linearRampToValueAtTime(freqEnd, t + dur);
+        g.gain.setValueAtTime(gain, t);
+        g.gain.linearRampToValueAtTime(0.0001, t + dur);
+        let lastNode = osc;
         if (filterFreq) {
             const f = this.ctx.createBiquadFilter();
             f.type = 'bandpass'; f.frequency.value = filterFreq; f.Q.value = 5;
-            osc.connect(f); f.connect(g);
-        } else {
-            osc.connect(g);
+            osc.connect(f); lastNode = f;
         }
+        lastNode.connect(g);
         g.connect(this.master);
-        osc.start(); osc.stop(this.ctx.currentTime + dur + 0.01);
+        osc.start(t);
+        osc.stop(t + dur + 0.02);
+        osc.onended = () => { g.disconnect(); };
     },
 
     playNoise(gain, dur, filterFreq, filterQ) {
         if (!this.ctx || this.muted) return;
-        const buf = this.ctx.createBuffer(1, this.ctx.sampleRate * dur, this.ctx.sampleRate);
+        const t = this.ctx.currentTime;
+        const samples = Math.floor(this.ctx.sampleRate * dur);
+        const buf = this.ctx.createBuffer(1, samples, this.ctx.sampleRate);
         const data = buf.getChannelData(0);
         for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
         const src = this.ctx.createBufferSource(); src.buffer = buf;
         const g = this.ctx.createGain();
-        g.gain.setValueAtTime(gain, this.ctx.currentTime);
-        g.gain.linearRampToValueAtTime(0, this.ctx.currentTime + dur);
+        g.gain.setValueAtTime(gain, t);
+        g.gain.linearRampToValueAtTime(0.0001, t + dur);
+        let lastNode = src;
         if (filterFreq) {
             const f = this.ctx.createBiquadFilter();
             f.type = 'bandpass'; f.frequency.value = filterFreq; f.Q.value = filterQ || 5;
-            src.connect(f); f.connect(g);
-        } else {
-            src.connect(g);
+            src.connect(f); lastNode = f;
         }
-        g.connect(this.master); src.start();
+        lastNode.connect(g);
+        g.connect(this.master);
+        src.start(t);
+        src.onended = () => { g.disconnect(); };
     },
 
     playerFire() { this.playTone(880, 440, 'square', 0.06, 0.05); },
@@ -3605,12 +3711,10 @@ const Audio = {
         this.padOsc.connect(this.padFilter); this.padFilter.connect(this.padGain); this.padGain.connect(this.master);
         this.padOsc.start();
 
-        // Layer 3: shimmer handled in update
-        this.shimmerDelay = this.ctx.createDelay(1);
-        this.shimmerDelay.delayTime.value = 0.3;
-        const feedback = this.ctx.createGain(); feedback.gain.value = 0.35;
-        this.shimmerDelay.connect(feedback); feedback.connect(this.shimmerDelay);
-        this.shimmerDelay.connect(this.master);
+        // Layer 3: shimmer - use a simple gain node for reverb-like effect (no feedback loop)
+        this.shimmerGain = this.ctx.createGain();
+        this.shimmerGain.gain.value = 1;
+        this.shimmerGain.connect(this.master);
     },
 
     updateAmbient(dt) {
@@ -3628,12 +3732,13 @@ const Audio = {
             g.gain.linearRampToValueAtTime(0, this.ctx.currentTime + 1.5);
             const pan = this.ctx.createStereoPanner();
             pan.pan.value = Math.random() * 2 - 1;
-            osc.connect(g); g.connect(pan); pan.connect(this.shimmerDelay);
+            osc.connect(g); g.connect(pan); pan.connect(this.shimmerGain);
+            osc.onended = () => { g.disconnect(); };
             osc.start(); osc.stop(this.ctx.currentTime + 1.6);
         }
         // Pad filter LFO
         if (this.padFilter) {
-            this.padFilter.frequency.value = 400 + Math.sin(elapsedTime * 0.02 * Math.PI * 2) * 300;
+            this.padFilter.frequency.value = 250 + Math.sin(elapsedTime * 0.02 * Math.PI * 2) * 100;
         }
     },
 
@@ -3971,6 +4076,7 @@ function animate() {
         updateSpeedLines(dt);
         updateCombat(dt);
         updateArchCulling();
+        checkArchCollision();
         updateEngineTrails(dt);
         updateDust(dt);
         updateCameraJuice(dt);
