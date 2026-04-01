@@ -12,9 +12,13 @@
 body { overflow: hidden; background: #000; font-family: 'Share Tech Mono', 'Courier New', monospace; }
 canvas { display: block; }
 #crosshair { position: fixed; pointer-events: none; z-index: 10; }
-#crosshair-ring { width: 24px; height: 24px; border: 1.5px solid rgba(255,255,255,0.6); border-radius: 50%; position: absolute; top: -12px; left: -12px; transition: border-color 0.1s; }
-#crosshair-dot { width: 3px; height: 3px; background: rgba(255,255,255,0.8); border-radius: 50%; position: absolute; top: -1.5px; left: -1.5px; }
-#crosshair.hostile #crosshair-ring { border-color: rgba(230,57,136,0.9); }
+#crosshair-ring { width: 40px; height: 40px; border: 2px solid rgba(255,255,255,0.7); border-radius: 50%; position: absolute; top: -20px; left: -20px; transition: border-color 0.1s; }
+#crosshair-dot { width: 5px; height: 5px; background: rgba(255,255,255,0.9); border-radius: 50%; position: absolute; top: -2.5px; left: -2.5px; }
+#crosshair-lines { position: absolute; top: -20px; left: -20px; width: 40px; height: 40px; }
+#crosshair-lines::before, #crosshair-lines::after { content: ''; position: absolute; background: rgba(255,255,255,0.4); }
+#crosshair-lines::before { width: 12px; height: 2px; top: 19px; left: -8px; box-shadow: 36px 0 0 rgba(255,255,255,0.4); }
+#crosshair-lines::after { width: 2px; height: 12px; left: 19px; top: -8px; box-shadow: 0 36px 0 rgba(255,255,255,0.4); }
+#crosshair.hostile #crosshair-ring { border-color: rgba(230,57,136,0.9); box-shadow: 0 0 10px rgba(230,57,136,0.3); }
 #crosshair.hostile #crosshair-dot { background: rgba(230,57,136,0.9); }
 #hud { position: fixed; inset: 0; pointer-events: none; z-index: 10; display: none; }
 #score-display { position: absolute; top: 16px; left: 16px; color: #fff; font-size: 22px; text-shadow: 0 1px 4px rgba(0,0,0,0.5); transition: transform 0.1s; }
@@ -146,7 +150,7 @@ canvas { display: block; }
   <div id="section-title"></div>
   <div id="mute-btn">♪ ON</div>
 </div>
-<div id="crosshair"><div id="crosshair-ring"></div><div id="crosshair-dot"></div></div>
+<div id="crosshair"><div id="crosshair-ring"></div><div id="crosshair-lines"></div><div id="crosshair-dot"></div></div>
 <div id="game-over"><h1>GAME OVER</h1><p>CLICK TO RESTART</p></div>
 <div id="comm-box"><canvas id="comm-portrait" width="48" height="48"></canvas><div id="comm-name"></div><div id="comm-text"></div></div>
 <div id="card-overlay"></div>
@@ -917,6 +921,8 @@ function initTouchControls() {
             knob.style.top = (touchJoystickCenter.y + ny - 20) + 'px';
             input.mouseNormX = nx / maxDist;
             input.mouseNormY = -(ny / maxDist);
+            // On mobile, aim follows the ship offset
+            aimNDC.set(input.mouseNormX * 0.5, input.mouseNormY * 0.5);
         }
     }, { passive: false });
 
@@ -3319,19 +3325,17 @@ function updateEndOfLevel(dt) {
 function updateCrosshair() {
     const crosshairEl = document.getElementById('crosshair');
 
-    // Project a point ahead of the ship onto the screen for the crosshair
-    const aimTarget = shipGroup.position.clone().addScaledVector(
-        splineCurve.getTangentAt(Math.min(splineProgress, 0.999)), -30
-    );
-    const projected = aimTarget.clone().project(camera);
-    const cx = (projected.x + 1) * 0.5 * window.innerWidth;
-    const cy = (-projected.y + 1) * 0.5 * window.innerHeight;
-    crosshairEl.style.left = cx + 'px';
-    crosshairEl.style.top = cy + 'px';
+    // Crosshair follows the mouse/touch position on screen
+    const mx = (input.mouseNormX + 1) * 0.5 * window.innerWidth;
+    const my = (1 - (input.mouseNormY + 1) * 0.5) * window.innerHeight;
+    crosshairEl.style.left = mx + 'px';
+    crosshairEl.style.top = my + 'px';
 
-    // Raycaster from ship forward for hostile detection
-    const shipFwd = splineCurve.getTangentAt(Math.min(splineProgress, 0.999)).normalize();
-    aimRaycaster.set(shipGroup.position, shipFwd);
+    // Update aim NDC for raycasting
+    aimNDC.set(input.mouseNormX, input.mouseNormY);
+
+    // Raycaster from camera through crosshair for hostile detection
+    aimRaycaster.setFromCamera(aimNDC, camera);
     let hostile = false;
     for (const d of drones) {
         if (!d.userData.active) continue;
@@ -3750,8 +3754,9 @@ function exitCardPick() {
 // ============================================================
 function fireWeapon() {
     Audio.playerFire();
-    // Bullets fire straight ahead from the ship's facing direction
-    const baseDir = splineCurve.getTangentAt(Math.min(splineProgress, 0.999)).clone().normalize();
+    // Bullets fire from ship toward where the crosshair is pointing
+    aimRaycaster.setFromCamera(aimNDC, camera);
+    const baseDir = aimRaycaster.ray.direction.clone().normalize();
 
     const fp = weaponState.firePattern;
 
